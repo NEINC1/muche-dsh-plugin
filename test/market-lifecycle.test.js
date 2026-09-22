@@ -1,5 +1,5 @@
 /**
- * market-lifecycle.test.js — 市场一键安装/卸载形态守卫（2026-09-22）。
+ * market-lifecycle.test.js — 市场一键安装/卸载形态守卫。
  *
  * 锁四条：
  * ① 顶层 inject 只留面板生死线，反向桥接依赖走 ctx.get 可选——
