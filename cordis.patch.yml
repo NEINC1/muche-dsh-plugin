@@ -1,0 +1,15 @@
+# @muche/dsh-plugin 组合包层（2026-09-19 bundle 化）。
+#
+# 本文件随包发布：`dsh plugin --profile <name> add <本包>` 时，dsh 检测到
+# package.json 的 dsh.bundle.patch 指向本文件，会**自动**把本包追加进 profile 的
+# dsh.profile.bundles 层列表——用户不再需要手工编辑 profile 的 cordis.patch.yml
+# （老装法必须手写同一行，否则「装上了但不生效」）。
+#
+# 行按包名引用模块：loader 从 profile 目录解析（本地调试的 --patch overlay 才写
+# 绝对路径）。层顺序由 dsh 统一组装，行内顺序无加载语义。
+#
+# 迁移注意：patch 的 insert 不按 id 去重，老装法在 profile 的 cordis.patch.yml 里
+# 手写的 `- id: muche` 必须删除，否则同一 id 出现两行、插件被加载两次。
+- insert:
+    - id: muche
+      name: '@muche/dsh-plugin'
