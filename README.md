@@ -15,12 +15,12 @@
 用户在小沐后台「接入设置」复制安装命令，在自己机器上执行（装完重启 dsh 即用）：
 
 ```bash
-dsh --profile web plugin add @muche/dsh-plugin
+dsh plugin --profile web add @muche/dsh-plugin
 dsh --profile web --dump-config | grep -c '^# == @muche/dsh-plugin$'   # 期望 1
 sudo systemctl restart dsh-web
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.3），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.4），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 ## 使用
 
@@ -32,7 +32,7 @@ sudo systemctl restart dsh-web
 ## 卸载
 
 ```bash
-dsh --profile web plugin remove '@muche/dsh-plugin'
+dsh plugin --profile web remove '@muche/dsh-plugin'
 sudo systemctl restart dsh-web
 ```
 
