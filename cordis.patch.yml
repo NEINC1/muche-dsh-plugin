@@ -1,4 +1,4 @@
-# @muche/dsh-plugin 组合包层（2026-09-19 bundle 化）。
+# muche-dsh-plugin 组合包层（2026-09-19 bundle 化）。
 #
 # 本文件随包发布：`dsh plugin --profile <name> add <本包>` 时，dsh 检测到
 # package.json 的 dsh.bundle.patch 指向本文件，会**自动**把本包追加进 profile 的
@@ -12,4 +12,4 @@
 # 手写的 `- id: muche` 必须删除，否则同一 id 出现两行、插件被加载两次。
 - insert:
     - id: muche
-      name: '@muche/dsh-plugin'
+      name: 'muche-dsh-plugin'

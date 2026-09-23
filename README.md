@@ -1,7 +1,7 @@
-# @muche/dsh-plugin — 和有持续状态的小沐聊天
+# muche-dsh-plugin — 和有持续状态的小沐聊天
 
-[![npm](https://img.shields.io/npm/v/@muche/dsh-plugin.svg)](https://www.npmjs.com/package/@muche/dsh-plugin)
-[![license](https://img.shields.io/npm/l/@muche/dsh-plugin.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/muche-dsh-plugin.svg)](https://www.npmjs.com/package/muche-dsh-plugin)
+[![license](https://img.shields.io/npm/l/muche-dsh-plugin.svg)](LICENSE)
 [![Awesome DSH Plugin](https://beancookie.github.io/awesome-dsh-plugin/badge.svg)](https://beancookie.github.io/awesome-dsh-plugin)
 
 连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务。
@@ -18,14 +18,14 @@
 装完在托盘重启 DSH Desktop：
 
 ```bash
-dsh plugin add @muche/dsh-plugin
+dsh plugin add muche-dsh-plugin
 ```
 
 **服务端**：web profile，装完重启 `dsh-web` 服务：
 
 ```bash
-dsh plugin --profile web add @muche/dsh-plugin
-dsh --profile web --dump-config | grep -c '^# == @muche/dsh-plugin$'   # 期望 1
+dsh plugin --profile web add muche-dsh-plugin
+dsh --profile web --dump-config | grep -c '^# == muche-dsh-plugin$'   # 期望 1
 sudo systemctl restart dsh-web
 ```
 
@@ -47,8 +47,8 @@ sudo systemctl restart dsh-web
 ## 卸载
 
 ```bash
-dsh plugin remove '@muche/dsh-plugin'              # 桌面 DSH Terminal（当前激活 profile）
-dsh plugin --profile web remove '@muche/dsh-plugin'  # 服务端 web profile
+dsh plugin remove 'muche-dsh-plugin'              # 桌面 DSH Terminal（当前激活 profile）
+dsh plugin --profile web remove 'muche-dsh-plugin'  # 服务端 web profile
 sudo systemctl restart dsh-web                     # 仅服务端；桌面在托盘重启应用
 ```
 

@@ -1,8 +1,8 @@
-// @muche/dsh-plugin — 客户端入口（浏览器）。
+// muche-dsh-plugin — 客户端入口（浏览器）。
 // 形态：左下角「小沐」入口按钮 + 可拖动聊天浮层面板 + 设置页。
 // 所有数据经 /api/muche/* 路由直连后端，不进 dsh agent 循环（零注入）。
 window.__ModuleLoader__.load({
-  id: '@muche/dsh-plugin',
+  id: 'muche-dsh-plugin',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     `
     if (typeof document !== 'undefined') {
       const tag = document.createElement('style')
-      tag.dataset.plugin = '@muche/dsh-plugin'
+      tag.dataset.plugin = 'muche-dsh-plugin'
       tag.textContent = CSS
       document.head.appendChild(tag)
     }
@@ -842,7 +842,7 @@ window.__ModuleLoader__.load({
     // apply；此处保留 get 但禁静默返回——缺席即 loud 抛错，进 Boot 页报错而非无声消失。
     function apply(ctx) {
       const slots = ctx.get('slots')
-      if (slots === undefined) throw new Error('@muche/dsh-plugin: required service "slots" is missing (declare inject: [\'slots\'])')
+      if (slots === undefined) throw new Error('muche-dsh-plugin: required service "slots" is missing (declare inject: [\'slots\'])')
 
       // 启动 WS 长连接(读配置;无 key 则不连,设置页保存后由 save 触发换连)
       apiGet('/api/muche/config').then((res) => {
