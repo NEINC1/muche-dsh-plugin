@@ -12,7 +12,16 @@
 
 ## 安装
 
-用户在小沐后台「接入设置」复制安装命令，在自己机器上执行（装完重启 dsh 即用）：
+分两条线（profile 与重启方式不同，别混用）：
+
+**桌面端**：托盘打开 DSH Terminal，裸命令默认装到当前激活 profile（desktop），
+装完在托盘重启 DSH Desktop：
+
+```bash
+dsh plugin add @muche/dsh-plugin
+```
+
+**服务端**：web profile，装完重启 `dsh-web` 服务：
 
 ```bash
 dsh plugin --profile web add @muche/dsh-plugin
@@ -20,7 +29,13 @@ dsh --profile web --dump-config | grep -c '^# == @muche/dsh-plugin$'   # 期望 
 sudo systemctl restart dsh-web
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.4），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.5），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+
+注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
+子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
+`required option '--profile <name>' not specified`——别写。
+
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.5），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 ## 使用
 
@@ -32,11 +47,12 @@ sudo systemctl restart dsh-web
 ## 卸载
 
 ```bash
-dsh plugin --profile web remove '@muche/dsh-plugin'
-sudo systemctl restart dsh-web
+dsh plugin remove '@muche/dsh-plugin'              # 桌面 DSH Terminal（当前激活 profile）
+dsh plugin --profile web remove '@muche/dsh-plugin'  # 服务端 web profile
+sudo systemctl restart dsh-web                     # 仅服务端；桌面在托盘重启应用
 ```
 
-`remove` 只摘层与代码；本机配置（settings `muche` 命名空间）保留，重装免配。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间。
+`remove` 只摘层与代码；本机配置（settings `muche` 命名空间）保留，重装免配。装完在托盘重启 DSH Desktop 生效。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间。
 
 ## 故障排查
 
