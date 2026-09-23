@@ -12,30 +12,18 @@
 
 ## 安装
 
-分两条线（profile 与重启方式不同，别混用）：
-
-**桌面端**：托盘打开 DSH Terminal，裸命令默认装到当前激活 profile（desktop），
-装完在托盘重启 DSH Desktop：
+在 DSH Desktop 的 DSH Terminal 里执行（裸命令默认装到当前激活 profile，
+装完在托盘重启 DSH Desktop 即用）：
 
 ```bash
 dsh plugin add muche-dsh-plugin
 ```
 
-**服务端**：web profile，装完重启 `dsh-web` 服务：
-
-```bash
-dsh plugin --profile web add muche-dsh-plugin
-dsh --profile web --dump-config | grep -c '^# == muche-dsh-plugin$'   # 期望 1
-sudo systemctl restart dsh-web
-```
-
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.5），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.6），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
 `required option '--profile <name>' not specified`——别写。
-
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.5），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 ## 使用
 
@@ -47,9 +35,7 @@ sudo systemctl restart dsh-web
 ## 卸载
 
 ```bash
-dsh plugin remove 'muche-dsh-plugin'              # 桌面 DSH Terminal（当前激活 profile）
-dsh plugin --profile web remove 'muche-dsh-plugin'  # 服务端 web profile
-sudo systemctl restart dsh-web                     # 仅服务端；桌面在托盘重启应用
+dsh plugin remove 'muche-dsh-plugin'
 ```
 
 `remove` 只摘层与代码；本机配置（settings `muche` 命名空间）保留，重装免配。装完在托盘重启 DSH Desktop 生效。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间。
@@ -64,6 +50,8 @@ sudo systemctl restart dsh-web                     # 仅服务端；桌面在托
 | 面板正常但桥接不工作 | dsh 本体缺本地执行依赖，或插件被加载两次（桌面端市场与 bundles 双挂载） | 看 dsh 日志有无反向桥接停用警告，升级 dsh 本体；桌面端到插件页确认小沐只装了一处 |
 | 要看桥到底什么状态 | 面板“在线”只证明路由可达，工具要的是桥接池在线 | 同机 `GET /api/muche/status`（需过 dsh 鉴权），看 `fibers[].mode/reason` |
 | 反向桥接任务无响应 | 同会话串行排队，或会话已失效 | 等待在途任务完成；`sN` 别名超 3 天消除后重开 |
+| 安装时报 peer 缺失（cordis/schemastery） | 新 profile 的宿主镜像还没建，属一次性瞬态 | 不用管，重启 Desktop 后 dsh 启动镜像即补齐；`dsh plugin list` 见 `muche-dsh-plugin` 在列即正常 |
+| 安装时报某子依赖 deprecated（如 node-domexception） | 警告来自桌面基础包的子树，不是本插件带的（本包零 bundle 依赖，`ws` 自身也零依赖） | 可忽略，不影响加载；等上游更新 |
 
 反向桥接只调用户本机：后端把任务帧从该用户的桥接连递下来，插件在本地 dsh 进程内执行、结果原路回传。桥不在时后端明确失败，不回退服务器。
 
@@ -89,14 +77,14 @@ sudo systemctl restart dsh-web                     # 仅服务端；桌面在托
 
 执行核按上游锁定的 `0.1.5-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
 
-依赖：`@deepseek-ai/schemastery` 为 peer（用宿主那份）；`ws` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫，未声明依赖致 dsh-web 崩溃循环的教训）；重启 dsh-web 前必跑全量测试，全绿才动。
+依赖：`@deepseek-ai/schemastery` 为 peer（用宿主那份）；`ws` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
 
 </details>
 
 ## 开发
 
 ```bash
-cd dsh && pnpm test   # 重启 dsh-web 前必跑，全绿才动
+cd dsh && pnpm test   # 重启 Desktop 前必跑，全绿才动
 ```
 
 ## 许可
