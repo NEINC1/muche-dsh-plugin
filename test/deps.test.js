@@ -1,9 +1,7 @@
-// dsh/test/deps.test.js — 插件依赖解析守卫 + 语法守卫（2026-08-16 事故教训）
+// dsh/test/deps.test.js — 插件依赖解析守卫 + 语法守卫
 //
-// 背景 1：某模块新增 import '@deepseek-ai/dsh-credentials'，
-// 未声明进 package.json → dsh-web 启动加载插件失败 → 整个 DSH 崩溃循环。
-// 背景 2：同一模块在函数体内写静态 import → SyntaxError →
-// 同样拖垮 dsh 启动（同一天第二起）。
+// 背景：未声明进 package.json 的新增 import 会让 dsh-web 启动加载插件失败，
+// 整个 DSH 崩溃循环；函数体内的静态 import 报 SyntaxError，同样拖垮启动。
 //
 // 本测试遍历 dsh/lib 全部源码：
 //  ① 把每个 '@deepseek-ai/*' import 按 Node 真实解析规则校验（与 dsh

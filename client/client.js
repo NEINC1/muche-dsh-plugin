@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
         this._open()
       },
       _wsUrl() {
-        // 同源代理(2026-08-15 实测定案):浏览器直连 backendUrl 在跨机/隧道
+        // 同源代理:浏览器直连 backendUrl 在跨机/隧道
         // 场景会指向用户本机而非服务器;WS 走本插件 Host 的 /api/muche/ws
         // 升级代理(同源经隧道),Host 进程内代理到后端。token 仍取配置 key。
         const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws'
@@ -538,7 +538,7 @@ window.__ModuleLoader__.load({
         setMsgs((prev) => [...prev, { role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images }])
         // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
         setThinking(true)
-        // WS 优先(聊天迁 WS 契约,Task 3);未就绪时 HTTP 降级(同达后端 chat_core)
+        // WS 优先(聊天走 WS 契约);未就绪时 HTTP 降级(同达后端 chat_core)
         const mid = wsStore.newId('m')
         inflightRef.current.add(mid)
         if (wsStore.isOpen()) {
@@ -585,7 +585,7 @@ window.__ModuleLoader__.load({
               },
             }, h(PersonIcon, { size: 16 })),
             h('div', { style: { maxWidth: '72%' } },
-              // 2026-08-15 用户拍板:面板不显示内心独白(💭 行移除)。
+              // 面板不显示内心独白(💭 行移除)。
               // inner_thought 字段与赋值链路保留(数据照常解析入库,恢复显示只需加回渲染)。
               imgUrls.length && mine ? h('div', { style: { marginBottom: m.content ? 6 : 0 } },
                 imgUrls.map((src, k) => h('img', {
@@ -848,7 +848,7 @@ window.__ModuleLoader__.load({
       apiGet('/api/muche/config').then((res) => {
         if (res && res.ok && res.apiKey) wsStore.start(res)
       })
-      // 连接自愈(2026-08-15 实测定案):周期检查 + 回到标签页立即检查——
+      // 连接自愈:周期检查 + 回到标签页立即检查——
       // muche/dsh 重启或首次 config 失败后,连接最终自动恢复(实时弹入/红点
       // 依赖 WS 在线;HTTP fallback 只保发送不保接收)。
       const selfHealTimer = setInterval(() => wsStore.ensureConnected(), 30000)
