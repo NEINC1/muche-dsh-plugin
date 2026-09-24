@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.9），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.10），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -74,7 +74,7 @@ dsh plugin remove 'muche-dsh-plugin'
 | `lib/ws-proxy.js` | 浏览器 WS 同源代理（backendUrl path 原样保留，远端须带 `/api` 前缀） |
 | `lib/dsh-bridge.js` + `lib/dsh-call.js` | 反向桥接：出站收 `dsh_task`，进程内直调 `sessionController` 执行，结果原路回传 |
 
-反向桥接语义（一任务只执行一次）：同 `session_id` 串行、`task_id` 去重、断连在途即失败；会话复用/新建由小沐在工作区别名里决定。`message_id` 幂等（服务端 Redis SET NX 300s）。
+反向桥接语义（一任务只执行一次）：同 `session_id` 串行、`task_id` 去重、断连在途即失败；会话复用/新建由小沐在工作区别名里决定。`message_id` 幂等（服务端 Redis SET NX 300s）。在途追加走 `steer`（当前轮 step 边界，闲时开新轮）＋`run_id`/`task_id` 在途寻址（含首轮占位，`dsh_session_created` 早期上报）；在途授权/提问以 prepend 拦截经 `dsh_interactive` 上行、`dsh_decide` 按 id 回决，他会话一律透传。
 
 执行核按上游锁定的 `0.1.5-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
 

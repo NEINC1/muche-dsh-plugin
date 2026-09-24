@@ -35,3 +35,27 @@ test('normalize 透传 kind 字段', () => {
   assert.ok(m, '未找到 normalize')
   assert.ok(/kind: m\.kind/.test(BUNDLE), 'normalize 未透传 kind')
 })
+
+// OI-074：悬浮窗发消息后不显示——刷新必须等同步完成再读本地，
+// 否则读到同步前快照，整页替换吞掉在途行（乐观用户行/reply 行）。
+test('OI-074 刷新等同步完成再读本地', () => {
+  const refresh = BUNDLE.match(/const refreshFromLocal = [\s\S]*?\}, \[triggerSync, loadHistory\]\)/)
+  assert.ok(refresh, '未找到 refreshFromLocal')
+  assert.ok(/triggerSync\(\)\.then/.test(refresh[0]), '读本地未等同步完成（fire-and-forget 会读到同步前快照）')
+})
+
+test('OI-074 同步失败不整页替换（保留在途行）', () => {
+  const refresh = BUNDLE.match(/const refreshFromLocal = [\s\S]*?\}, \[triggerSync, loadHistory\]\)/)
+  assert.ok(refresh, '未找到 refreshFromLocal')
+  assert.ok(/if \(ok\)/.test(refresh[0]), '同步失败仍替换显示，在途行会被旧快照吞掉')
+})
+
+test('OI-074 同步串行排队（防并发写本地竞态）', () => {
+  assert.ok(/syncChainRef/.test(BUNDLE), '缺少同步串行链，多次广播重叠会并发写本地')
+})
+
+test('OI-074 翻页同样等同步成功后再替换', () => {
+  const older = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
+  assert.ok(older, '未找到 loadOlder')
+  assert.ok(/triggerSync\(\)\.then/.test(older[0]), '翻页未等同步完成就替换，同样会吞在途行')
+})

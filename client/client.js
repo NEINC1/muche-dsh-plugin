@@ -475,10 +475,20 @@ window.__ModuleLoader__.load({
       }, [open, quotaUntil])
 
       // 拉取最新历史：打开面板 / dialogue_updated 广播触发。
-      // OI-070 本地口径：先触发服务端增量同步（静默失败不挡显示），
-      // 再读本地文件；服务端 history 只作同步源，不直接显示。
+      // OI-074 单真源串行：整页替换只发生在确认同步成功之后——同步完成
+      // 再读本地，读到的是同步后的新鲜文件；在途行（乐观用户行/reply 行）
+      // 与文件内容一致，替换不丢话。同步失败则保留内存现状，下次再收敛。
+      // 服务端 history 只作同步源，不直接显示。
+      // 同步串行排队：多次广播重叠时按序执行，防并发写本地竞态。
+      const syncChainRef = React.useRef(Promise.resolve())
       const triggerSync = React.useCallback(() => {
-        apiPost('/api/muche/sync', {}).catch(() => { /* 静默:读本地旧话照常显示 */ })
+        const run = syncChainRef.current.then(() => apiPost('/api/muche/sync', {}).then(
+          (res) => !!(res && res.ok),
+          () => false,
+        ))
+        // 断链保护：本次失败不影响后续排队。
+        syncChainRef.current = run.then(() => undefined, () => undefined)
+        return run
       }, [])
       const loadHistory = React.useCallback(() => {
         apiGet('/api/muche/local-history?limit=20').then((res) => {
@@ -496,15 +506,12 @@ window.__ModuleLoader__.load({
         }).catch(() => { /* 静默:下次打开/广播再试 */ })
       }, [])
       const refreshFromLocal = React.useCallback(() => {
-        triggerSync()
-        loadHistory()
+        return triggerSync().then((ok) => { if (ok) loadHistory() })
       }, [triggerSync, loadHistory])
       React.useEffect(() => {
         if (!open) return
         setLoading(true)
-        refreshFromLocal()
-        // loading 复位（loadHistory 内部不管理 loading）
-        apiGet('/api/muche/local-history?limit=20').then(() => setLoading(false)).catch(() => setLoading(false))
+        refreshFromLocal().then(() => setLoading(false))
       }, [open])
 
       React.useEffect(() => {
@@ -522,20 +529,24 @@ window.__ModuleLoader__.load({
       const loadOlder = () => {
         // OI-070 本地口径：本地无 before 游标，翻页即 limit 翻倍重读
         // （本地文件全量在机，200 上限内一次到位，无第二套游标）。
+        // OI-074：同样等同步成功后再整页替换，失败则保留现状。
         if (loadingOlder || !hasMore) return
         setLoadingOlder(true)
         const el = listRef.current
         const prevHeight = el ? el.scrollHeight : 0
         const prevScrollTop = el ? el.scrollTop : 0
         const nextLimit = Math.min(200, msgs.length + 20)
-        apiGet('/api/muche/local-history?limit=' + nextLimit).then((res) => {
-          setLoadingOlder(false)
-          if (res && res.ok) {
-            preserveRef.current = { prevHeight, prevScrollTop }
-            setMsgs(withSticky(normalize(res.messages)))
-            setHasMore(!!res.has_more)
-            setNextBefore(res.next_before || null)
-          }
+        triggerSync().then((ok) => {
+          if (!ok) { setLoadingOlder(false); return }
+          apiGet('/api/muche/local-history?limit=' + nextLimit).then((res) => {
+            setLoadingOlder(false)
+            if (res && res.ok) {
+              preserveRef.current = { prevHeight, prevScrollTop }
+              setMsgs(withSticky(normalize(res.messages)))
+              setHasMore(!!res.has_more)
+              setNextBefore(res.next_before || null)
+            }
+          }).catch(() => setLoadingOlder(false))
         })
       }
 
