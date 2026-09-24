@@ -1,6 +1,6 @@
 {
   "name": "muche-dsh-plugin",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务",
   "type": "module",
   "main": "lib/index.js",
