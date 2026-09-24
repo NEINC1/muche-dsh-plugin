@@ -373,6 +373,7 @@ window.__ModuleLoader__.load({
         id: m.id || '',
         medium: m.medium || 'text',
         image_count: Number(m.image_count) || 0,
+        kind: m.kind || '',
       }))
 
       // 附图选择:最多 3 张、单张 8M、仅四格式由后端强校验；前端先拦 obvious 的。
@@ -439,8 +440,8 @@ window.__ModuleLoader__.load({
             }
             if (parts.length > 0) setMsgs((prev) => [...prev, ...parts])
           } else if (data.type === 'dialogue_updated') {
-            // 对话更新广播——刷新历史显示最新消息与回复
-            loadHistory()
+            // 对话更新广播——先同步再读本地，显示最新消息与回复
+            refreshFromLocal()
           } else if (data.type === 'error' && data.message_id && inflightRef.current.has(data.message_id)) {
             settleInflight(data.message_id)
             if (data.code === 'message_quota_exhausted') {
@@ -474,10 +475,16 @@ window.__ModuleLoader__.load({
       }, [open, quotaUntil])
 
       // 拉取最新历史：打开面板 / dialogue_updated 广播触发。
+      // OI-070 本地口径：先触发服务端增量同步（静默失败不挡显示），
+      // 再读本地文件；服务端 history 只作同步源，不直接显示。
+      const triggerSync = React.useCallback(() => {
+        apiPost('/api/muche/sync', {}).catch(() => { /* 静默:读本地旧话照常显示 */ })
+      }, [])
       const loadHistory = React.useCallback(() => {
-        apiGet('/api/muche/history?limit=20').then((res) => {
+        apiGet('/api/muche/local-history?limit=20').then((res) => {
           if (res && res.ok) {
             // 钉住的报错不受刷新影响，一直显示到发新消息。
+            // 本地 reset_mark 行按系统提醒渲染（normalize 保留 kind）。
             setMsgs(withSticky(normalize(res.messages)))
             setHasMore(!!res.has_more)
             setNextBefore(res.next_before || null)
@@ -488,12 +495,16 @@ window.__ModuleLoader__.load({
           }
         }).catch(() => { /* 静默:下次打开/广播再试 */ })
       }, [])
+      const refreshFromLocal = React.useCallback(() => {
+        triggerSync()
+        loadHistory()
+      }, [triggerSync, loadHistory])
       React.useEffect(() => {
         if (!open) return
         setLoading(true)
-        loadHistory()
+        refreshFromLocal()
         // loading 复位（loadHistory 内部不管理 loading）
-        apiGet('/api/muche/history?limit=20').then(() => setLoading(false)).catch(() => setLoading(false))
+        apiGet('/api/muche/local-history?limit=20').then(() => setLoading(false)).catch(() => setLoading(false))
       }, [open])
 
       React.useEffect(() => {
@@ -509,16 +520,19 @@ window.__ModuleLoader__.load({
       }, [msgs])
 
       const loadOlder = () => {
-        if (loadingOlder || !nextBefore) return
+        // OI-070 本地口径：本地无 before 游标，翻页即 limit 翻倍重读
+        // （本地文件全量在机，200 上限内一次到位，无第二套游标）。
+        if (loadingOlder || !hasMore) return
         setLoadingOlder(true)
         const el = listRef.current
         const prevHeight = el ? el.scrollHeight : 0
         const prevScrollTop = el ? el.scrollTop : 0
-        apiGet('/api/muche/history?limit=20&before=' + encodeURIComponent(nextBefore)).then((res) => {
+        const nextLimit = Math.min(200, msgs.length + 20)
+        apiGet('/api/muche/local-history?limit=' + nextLimit).then((res) => {
           setLoadingOlder(false)
           if (res && res.ok) {
             preserveRef.current = { prevHeight, prevScrollTop }
-            setMsgs((prev) => [...normalize(res.messages), ...prev])
+            setMsgs(withSticky(normalize(res.messages)))
             setHasMore(!!res.has_more)
             setNextBefore(res.next_before || null)
           }
@@ -562,6 +576,14 @@ window.__ModuleLoader__.load({
       }
 
       const bubble = (m, i, showTime) => {
+        // OI-070 重置留痕：本地 reset_mark 行居中系统提醒，不占用户/小沐气泡。
+        if (m.kind === 'reset_mark') {
+          return h('div', { key: i },
+            h('div', {
+              style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '6px 0 10px' },
+            }, m.content || '小沐已被重置'),
+          )
+        }
         const mine = m.role === 'user'
         const previews = Array.isArray(m.previews) ? m.previews : []
         const histCount = !previews.length && mine && m.medium === 'image' && m.image_count > 0 && m.id

@@ -7,6 +7,7 @@
 连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务。
 
 * **聊天浮层**：左下角「小沐」入口，可拖动面板，微信式气泡，未读红点，主动消息实时弹入。
+* **本地存档**：聊天记录存本机文件（面板读本地，离线后启动补拉，重置只插提醒不清旧话）。
 * **反向桥接**：小沐可调用你本机 dsh 执行任务（出站常驻连接，不开入站端口）。
 * **设置页**：后端地址 + API key，每用户各自配置。
 
@@ -19,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.8），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.9），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -38,7 +39,7 @@ dsh plugin add muche-dsh-plugin
 dsh plugin remove 'muche-dsh-plugin'
 ```
 
-`remove` 只摘层与代码；本机配置（settings `muche` 命名空间）保留，重装免配。装完在托盘重启 DSH Desktop 生效。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间。
+`remove` 只摘层与代码；本机配置（settings `muche` 命名空间）与本地聊天存档（工作区 `messages/` 目录）保留，重装免配，旧话仍在。装完在托盘重启 DSH Desktop 生效。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间，并手动删除工作区 `messages/` 目录。
 
 ## 故障排查
 
