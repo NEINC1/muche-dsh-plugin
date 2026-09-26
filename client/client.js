@@ -93,6 +93,8 @@ window.__ModuleLoader__.load({
       attempts: 0,
       cfg: null,
       msgSeq: 0,
+      diagSummary: null, // 本机→后端探针结论（人话），失败自诊断一次后填入，面板直显
+      diagKey: '', // 探针已跑过的配置指纹（同配置不重复打后端）
       start(cfg) {
         const changed = !!cfg && (this.cfg === null || cfg.apiKey !== this.cfg.apiKey || cfg.backendUrl !== this.cfg.backendUrl)
         this.cfg = cfg || this.cfg
@@ -134,6 +136,7 @@ window.__ModuleLoader__.load({
         this.openTimer = setTimeout(() => {
           if (sock.readyState === WebSocket.OPEN) return
           this.lastError = '连接超时（10s 未建立）'
+          this.runDiag()
           try { sock.close() } catch (e) { /* onclose 收尾 */ }
         }, 10000)
         sock.onopen = () => {
@@ -153,6 +156,7 @@ window.__ModuleLoader__.load({
         sock.onclose = (ev) => {
           if (ev && ev.code && ev.code !== 1000 && ev.code !== 1006) {
             this.lastError = '连接被关闭(code=' + ev.code + ')'
+            this.runDiag()
           }
           this._teardown()
           this._scheduleReconnect()
@@ -160,8 +164,25 @@ window.__ModuleLoader__.load({
         sock.onerror = (ev) => {
           // 记录错误信息(浏览器 event 可能无 message,尽力而为)
           this.lastError = 'WebSocket 错误' + (ev && ev.message ? ': ' + String(ev.message).slice(0, 200) : '')
+          this.runDiag()
           try { sock.close() } catch (e) { /* onclose 收尾 */ }
         }
+      },
+      // 失败自诊断（排障口）：socket 建连失败时取一次 Host 侧探针，定位
+      // “本机→后端”还是“浏览器→本机”。同配置只跑一次（重连退避不重复打
+      // 后端）；结论进 diagSummary，面板在“未连接”后直显，无需找日志。
+      runDiag() {
+        const cfg = this.cfg
+        if (!cfg || !cfg.apiKey) return
+        const key = cfg.apiKey + '|' + cfg.backendUrl
+        if (this.diagKey === key) return
+        this.diagKey = key
+        try {
+          apiGet('/api/muche/ws-diag').then((res) => {
+            this.diagSummary = summarizeDiag(res)
+            this._setStatus(this.status) // 只触发重渲染，无状态迁移
+          }).catch(() => { /* 诊断失败不影响主流程 */ })
+        } catch (e) { /* 同上 */ }
       },
       _teardown() {
         if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
@@ -203,6 +224,19 @@ window.__ModuleLoader__.load({
         try { this.sock.send(JSON.stringify(obj)); return true } catch (e) { return false }
       },
       newId(prefix) { this.msgSeq += 1; return prefix + '-' + Date.now() + '-' + this.msgSeq },
+    }
+
+    // 探针回包翻人话（只读 stage/backend，不碰 token——回包本来就没有）。
+    function summarizeDiag(res) {
+      if (!res || typeof res !== 'object') return null
+      const b = (res && res.backend) || {}
+      const where = [b.host || '', b.pathPrefix && b.pathPrefix !== '(根)' ? b.pathPrefix : ''].join('')
+      if (res.ok && res.stage === 'backend-reached') {
+        return '本机到后端通（后端应答' + (res.status || '?') + '），查浏览器到本机'
+      }
+      if (res.stage === 'target') return '后端地址配错（' + (where || '空') + '）：' + (res.error || '')
+      if (res.stage) return '本机到后端不通（' + res.stage + '）：' + (res.error || '')
+      return '探针异常：' + (res.error || '未知')
     }
 
     // ── 官方配置作用域（configForms 镜像，不自存配置） ──
@@ -736,8 +770,8 @@ window.__ModuleLoader__.load({
           }),
           h('span', {
             style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
-            title: wsStore.lastError || '',
-          }, wsOpen ? '在线' : '实时通道未连接' + (wsStore.lastError ? '：' + wsStore.lastError : '')),
+            title: [wsStore.lastError, wsStore.diagSummary].filter(Boolean).join('；') || '',
+          }, wsOpen ? '在线' : '实时通道未连接' + (wsStore.lastError ? '：' + wsStore.lastError : '') + (wsStore.diagSummary ? '；' + wsStore.diagSummary : '')),
           h('button', {
             type: 'button', onClick: () => panelStore.close(),
             onPointerDown: (e) => e.stopPropagation(),
