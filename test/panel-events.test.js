@@ -141,3 +141,86 @@ test('空 channel 真实建连 URL 不带 channel 参数（后端判面板池）
     server.close()
   }
 })
+
+test('路由：无 key 401；有 key 下发 SSE 头＋hello 首行', async () => {
+  const { registerPanelEvents } = await import('../lib/panel-events.js')
+  const makeCtx = () => {
+    const handlers = {}
+    const cleanups = []
+    return {
+      handlers,
+      cleanups,
+      ctx: {
+        connection: { requestRejection: () => undefined },
+        webServer: { register: (entry) => { handlers[entry.path] = entry.handler; return () => { delete handlers[entry.path] } } },
+        effect: (setup) => {
+          const dispose = setup()
+          if (typeof dispose === 'function') cleanups.push(dispose)
+          return () => {}
+        },
+      },
+    }
+  }
+  const runRes = () => {
+    const out = { code: 0, headers: null, body: '', closed: false, closeHandlers: [] }
+    return {
+      out,
+      res: {
+        writeHead: (c, h) => { out.code = c; out.headers = h },
+        write: (s) => { out.body += String(s) },
+        end: (s) => { out.ended = true; if (s) out.body += String(s) },
+        on: (ev, fn) => { if (ev === 'close') out.closeHandlers.push(fn) },
+      },
+    }
+  }
+  // 无 key：401 JSON（不建上游、不挂订阅）。
+  {
+    const { handlers, cleanups, ctx } = makeCtx()
+    assert.equal(registerPanelEvents(ctx, { backendUrl: 'http://127.0.0.1:9999', apiKey: '', workspacePath: '' }), false)
+    const handler = handlers['/api/muche/events']
+    assert.ok(handler, '缺少 /api/muche/events 路由')
+    const { out, res } = runRes()
+    await handler({ method: 'GET' }, res)
+    assert.equal(out.code, 401)
+    assert.ok(JSON.parse(out.body).ok === false)
+    for (const dispose of cleanups.splice(0)) dispose()
+  }
+  // 有 key：200 SSE 头＋hello 首行（上游建连失败不挡订阅，帧到即扇）。
+  {
+    const { handlers, cleanups, ctx } = makeCtx()
+    assert.equal(registerPanelEvents(ctx, { backendUrl: 'http://127.0.0.1:9999', apiKey: 'k', workspacePath: '' }), false)
+    const handler = handlers['/api/muche/events']
+    const { out, res } = runRes()
+    await handler({ method: 'GET' }, res)
+    assert.equal(out.code, 200)
+    assert.equal(out.headers['Content-Type'], 'text/event-stream')
+    assert.ok(out.body.includes('"hello"'), '订阅者未收 hello 首行')
+    // 纤程卸载：hub 与上游同释（重连 timer 不得泄漏 hanging 单测进程）。
+    for (const dispose of cleanups.splice(0)) dispose()
+  }
+})
+
+test('dispose 只断 SSE，不断本地存档', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { default: path } = await import('node:path')
+  const { writeLocalState, readLocalRows } = await import('../lib/local-store.js')
+  const { createPanelEventsHub } = await import('../lib/panel-events.js')
+  const dir = await mkdtemp(path.join(tmpdir(), 'muche-dispose-'))
+  try {
+    await writeFile(path.join(dir, 'messages.jsonl'), '{"id":"keep"}\n')
+    await writeLocalState(dir, { before: '', generation: 7 })
+    const res = { write() {}, on() {}, end() {} }
+    const hub2 = createPanelEventsHub({
+      createUpstream: () => ({ start() {}, dispose() {} }),
+    })
+    hub2.subscribe(res, { backendUrl: 'http://x', apiKey: 'k' })
+    hub2.dispose()
+    const rows = await readLocalRows(dir)
+    assert.ok(rows.some((r) => r.id === 'keep'), 'dispose 后本地行必须原样保留')
+    assert.equal(hub2.subscriberCount, 0)
+  } finally {
+    const { rm } = await import('node:fs/promises')
+    await rm(dir, { recursive: true, force: true })
+  }
+})

@@ -14,21 +14,18 @@ import { readFileSync } from 'node:fs'
 
 const CLIENT = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 
-test('三处建连失败都触发自诊断', () => {
+test('SSE 建连失败与中断都触发自诊断', () => {
   assert.equal(
-    (CLIENT.match(/this\.runDiag\(\)/g) || []).length >= 3, true,
-    'runDiag 调用不足 3 处（超时/onclose/onerror 须全覆盖）',
+    (CLIENT.match(/this\.runDiag\(\)/g) || []).length >= 2, true,
+    'runDiag 调用不足 2 处（SSE 建连失败/彻底中断须全覆盖）',
   )
 })
 
 test('探针走同源相对地址，不带凭据', () => {
-  assert.ok(
-    /apiGet\('\/api\/muche\/ws-diag'\)/.test(CLIENT),
-    '探针未走同源 apiGet（相对地址凭 Cookie 过门，不拼 host、不带 token）',
-  )
-  const diagCall = CLIENT.match(/apiGet\('\/api\/muche\/ws-diag'\)[^;]*/g) || []
-  for (const call of diagCall) {
-    assert.ok(!/token|apiKey/.test(call), `探针调用带凭据：${call}`)
+  const lines = CLIENT.split('\n').filter((l) => l.includes("apiGet('/api/muche/ws-diag')"))
+  assert.ok(lines.length > 0, '探针未走同源 apiGet（相对地址凭 Cookie 过门，不拼 host、不带 token）')
+  for (const line of lines) {
+    assert.ok(!/token|apiKey/.test(line), `探针调用带凭据：${line.trim()}`)
   }
 })
 
@@ -51,22 +48,22 @@ test('“未连接”文案带面板所在源（只协议+主机，无路径参�
   assert.ok(!/location\.href|location\.search|location\.pathname/.test(CLIENT), '源定位带了路径/参数（泄漏页面细节）')
 })
 
-test('SSE 模式只在非 http(s) 页启用，原生 WS 路径不动', () => {
-  assert.ok(/useNativeWs\(\)/.test(CLIENT), '缺少原生 WS 可用判定')
-  assert.ok(/location\.protocol\s*===\s*'http:'/.test(CLIENT), '判定未覆盖 http:')
-  assert.ok(/location\.protocol\s*===\s*'https:'/.test(CLIENT), '判定未覆盖 https:')
-  assert.ok(/new WebSocket\(this\._wsUrl\(\)\)/.test(CLIENT), '原生 WS 建连被动过（http 页必须零回归）')
+test('原生 WS 整条已删（OI-078 全面用新，无旧路分支）', () => {
+  for (const relic of [/new WebSocket\(/, /useNativeWs\(\)/, /_wsUrl\(\)/, /_openSse\(\)/, /_teardownSse\(\)/, /this\.sock/, /pingTimer/, /openTimer/, /reconnectTimer/, /_scheduleReconnect/]) {
+    assert.ok(!relic.test(CLIENT), `原生 WS 残留未删：${relic}`)
+  }
 })
 
 test('SSE 下行走同源相对地址，进同一监听总线', () => {
   assert.ok(/new EventSource\('\/api\/muche\/events'\)/.test(CLIENT), 'SSE 未走同源相对地址')
-  const sseBlock = CLIENT.match(/_openSse\(\)\s*\{[\s\S]*?\n      \},/)
-  assert.ok(sseBlock, '未找到 _openSse')
-  assert.ok(/this\.listeners/.test(sseBlock[0]) || /for\s*\(const f of this\.listeners\)/.test(CLIENT), 'SSE 帧未进同一监听总线')
+  const sseBlock = CLIENT.match(/_open\(\)\s*\{[\s\S]*?\n      \},/)
+  assert.ok(sseBlock, '未找到 _open')
+  assert.ok(/for\s*\(const f of this\.listeners\)/.test(sseBlock[0]), 'SSE 帧未进同一监听总线')
 })
 
-test('SSE 模式上行恒走 HTTP（send 短路，不碰空 socket）', () => {
+test('上行恒走 HTTP（send 永 false，调用方降级）', () => {
   const sendBlock = CLIENT.match(/send\(obj\)\s*\{[\s\S]*?\n      \},/)
   assert.ok(sendBlock, '未找到 send')
-  assert.ok(/sseOpen/.test(sendBlock[0]), 'send 未处理 SSE 模式（空 socket 直调会抛）')
+  assert.ok(/return false/.test(sendBlock[0]), 'send 必须永 false（上行走 HTTP）')
+  assert.ok(!/this\.sock/.test(sendBlock[0]), 'send 仍碰 socket')
 })

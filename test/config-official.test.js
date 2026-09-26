@@ -11,7 +11,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { Config, DEFAULT_BACKEND, NS, configNamespace, readConfig, writeConfig } from '../lib/config.js'
+import { Config, NS, configNamespace, readConfig, writeConfig } from '../lib/config.js'
 
 const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const CONFIG_SRC = readFileSync(new URL('../lib/config.js', import.meta.url), 'utf8')
@@ -39,7 +39,7 @@ test('Config 直接调用返回引用（与官方 loader 同语义）', () => {
   assert.equal(parsed.workspacePath.get(), '')
 })
 
-test('readConfig：引用与普通值同读，缺省落默认值', () => {
+test('readConfig：引用与普通值同读，空即空不回落（OI-078 未配置显式化）', () => {
   const ref = (v) => ({ get: () => v })
   assert.deepEqual(
     readConfig({ backendUrl: ref('http://x/api'), apiKey: ref('k'), workspacePath: ref('/w') }),
@@ -47,11 +47,11 @@ test('readConfig：引用与普通值同读，缺省落默认值', () => {
   )
   assert.deepEqual(
     readConfig({ backendUrl: '', apiKey: '', workspacePath: '' }),
-    { backendUrl: DEFAULT_BACKEND, apiKey: '', workspacePath: '' },
+    { backendUrl: '', apiKey: '', workspacePath: '' },
   )
   assert.deepEqual(
     readConfig(undefined),
-    { backendUrl: DEFAULT_BACKEND, apiKey: '', workspacePath: '' },
+    { backendUrl: '', apiKey: '', workspacePath: '' },
   )
 })
 

@@ -97,3 +97,78 @@ test('pageLocalRows 倒取正序上限', () => {
   const rows = [{ id: '1' }, { id: '2' }, { id: '3' }]
   assert.deepEqual(pageLocalRows(rows, 2).map((r) => r.id), ['2', '3'])
 })
+
+test('userDirName 空串直接抛（禁 anonymous 回落）', () => {
+  assert.throws(() => userDirName(''), /身份未解析/)
+  assert.throws(() => userDirName(null), /身份未解析/)
+})
+
+test('迁移：旧根行按 id 合并＋state 取大＋落痕＋幂等', async () => {
+  const { mkdir, writeFile, readFile } = await import('node:fs/promises')
+  const { existsSync } = await import('node:fs')
+  const { migrateUserArchive, ARCHIVE_MARKER, MIGRATED_FROM } = await import('../lib/local-store.js')
+  const base = await makeDir()
+  try {
+    const hash = userDirName('mig-u')
+    const oldDir = path.join(base, 'old', hash)
+    const newRoot = path.join(base, 'new')
+    await mkdir(oldDir, { recursive: true })
+    await writeFile(path.join(oldDir, 'messages.jsonl'), '{"id":"a"}\n{"id":"b"}\n')
+    await writeFile(path.join(oldDir, 'state.json'), JSON.stringify({ before: 'x', generation: 3 }))
+    const first = await migrateUserArchive({ oldRoot: path.join(base, 'old'), newRoot, userHash: hash })
+    assert.equal(first.moved, 2)
+    assert.equal(first.already, false)
+    const rows = await readLocalRows(path.join(newRoot, hash))
+    assert.deepEqual(rows.map((r) => r.id).sort(), ['a', 'b'])
+    assert.equal((await readLocalState(path.join(newRoot, hash))).generation, 3)
+    assert.equal(existsSync(path.join(newRoot, ARCHIVE_MARKER)), true)
+    assert.equal(existsSync(path.join(oldDir, MIGRATED_FROM)), true)
+    // 旧抽屉原样保留（只留痕不删数据）。
+    assert.equal(existsSync(path.join(oldDir, 'messages.jsonl')), true)
+    const second = await migrateUserArchive({ oldRoot: path.join(base, 'old'), newRoot, userHash: hash })
+    assert.equal(second.already, true)
+    assert.equal(second.moved, 0)
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
+
+test('迁移：新根 state 更大则保留新根', async () => {
+  const { mkdir, writeFile } = await import('node:fs/promises')
+  const { migrateUserArchive } = await import('../lib/local-store.js')
+  const base = await makeDir()
+  try {
+    const hash = userDirName('mig-v')
+    const oldDir = path.join(base, 'old', hash)
+    const newDir = path.join(base, 'new', hash)
+    await mkdir(oldDir, { recursive: true })
+    await mkdir(newDir, { recursive: true })
+    await writeFile(path.join(oldDir, 'messages.jsonl'), '{"id":"o"}\n')
+    await writeFile(path.join(oldDir, 'state.json'), JSON.stringify({ before: '', generation: 1 }))
+    await writeFile(path.join(newDir, 'state.json'), JSON.stringify({ before: 'y', generation: 9 }))
+    await migrateUserArchive({ oldRoot: path.join(base, 'old'), newRoot: path.join(base, 'new'), userHash: hash })
+    const state = await readLocalState(newDir)
+    assert.equal(state.generation, 9)
+    assert.equal(state.before, 'y')
+    const rows = await readLocalRows(newDir)
+    assert.ok(rows.some((r) => r.id === 'o'))
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
+
+test('迁移：旧根缺失即空过不抛；旧根==新根只写标记', async () => {
+  const { migrateUserArchive, ARCHIVE_MARKER } = await import('../lib/local-store.js')
+  const { existsSync } = await import('node:fs')
+  const base = await makeDir()
+  try {
+    const r1 = await migrateUserArchive({ oldRoot: path.join(base, 'nope'), newRoot: path.join(base, 'n1'), userHash: userDirName('u') })
+    assert.equal(r1.moved, 0)
+    const same = path.join(base, 'same')
+    const r2 = await migrateUserArchive({ oldRoot: same, newRoot: same, userHash: userDirName('u') })
+    assert.equal(r2.moved, 0)
+    assert.equal(existsSync(path.join(same, ARCHIVE_MARKER)), true)
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})

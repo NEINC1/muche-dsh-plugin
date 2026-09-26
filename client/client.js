@@ -48,8 +48,8 @@ window.__ModuleLoader__.load({
       return open
     }
 
-    // 额度恢复时刻的本地时分（lib/quota.js 为 node 侧单源；浏览器 loader 只挂
-    // 静态模块表，无法相对 require，这里仅做时刻格式化）
+    // 额度恢复时刻的本地时分（面板侧唯一实现；同日 HH:MM，跨日由 quotaUntil
+    // 倒计时行覆盖，不另起格式化真源）
     function localHM(iso) {
       const t = Date.parse(iso)
       if (!Number.isFinite(t)) return ''
@@ -75,110 +75,34 @@ window.__ModuleLoader__.load({
       } catch (e) { return { ok: false, error: '请求失败' } }
     }
 
-    // ── 后端 WS 长连接（同源代理形态，实测定案） ──
-    // 浏览器连本机 dsh 同源代理 /api/muche/ws?token=<apiKey>（经隧道可达），
-    // Host 侧 ws-proxy 按配置的 backendUrl（含 /api 前缀，原样保留）透传到后端
+    // ── 实时下行（SSE 唯一通道，OI-078 全面用新） ──
+    // Host 代持真正的后端 WS（面板池，见 panel-events.js），浏览器经同源
+    // /api/muche/events 收下行（与 apiGet 同门：http(s) 页与 dsh-app:// 页通用；
+    // 原生 WS 整条已删——dsh-app:// 页无 DNS 且跨源被官方门拦，结构上不可用）。
     // （铁律:零注入，不进 dsh agent 循环）:
-    // 下行:proactive(主动消息,manager 向本用户全连接广播)→ 面板实时弹入 +
-    //       未读红点;reply(本连接 user_message 的回复,仅回本连接)。
-    // 上行:user_message(聊天迁 WS 契约;HTTP /api/muche/chat 保留为 WS
-    //       未就绪时的降级通道——两者同达后端 chat_core,行为同源)。
-    // 心跳:25s ping(服务端 60s 无消息断开);断开指数退避重连(≤30s)。
+    // 下行:proactive(主动消息)→ 面板实时弹入 + 未读红点;reply(回复);
+    //       dialogue_updated(更新通知);error(失败事实)。
+    // 上行:恒走 HTTP /api/muche/chat（同 mid 幂等，与 WS 时代同语义）。
+    // 保活:Host 上游 25s 自 ping（60s 服务端超时）；SSE 25s 注释心跳；
+    //       EventSource 断线原生退避重连。
     const wsStore = {
       status: 'idle', // idle | connecting | open | closed
-      sock: null,
+      es: null,
+      sseOpen: false,
+      lastError: null,
       listeners: [],
-      pingTimer: null,
-      reconnectTimer: null,
-      attempts: 0,
       cfg: null,
       msgSeq: 0,
       diagSummary: null, // 本机→后端探针结论（人话），失败自诊断一次后填入，面板直显
       diagKey: '', // 探针已跑过的配置指纹（同配置不重复打后端）
-      es: null, // SSE 模式下行通道（仅非 http(s) 页）
-      sseOpen: false,
       start(cfg) {
         const changed = !!cfg && (this.cfg === null || cfg.apiKey !== this.cfg.apiKey || cfg.backendUrl !== this.cfg.backendUrl)
         this.cfg = cfg || this.cfg
         if (!this.cfg || !this.cfg.apiKey) { this._teardown(); return }
-        // 非 http(s) 页（桌面端 dsh-app:// 自定义协议）：原生 WebSocket 结构上
-        // 不可用（ws:// 无 DNS、跨源被官方门拦），下行走同源 SSE（Host 代持上游），
-        // 上行走既有 HTTP 降级。http(s) 页走原生 WS，行为与之前一字不差。
-        if (!useNativeWs()) {
-          if (changed) this._teardownSse()
-          this._openSse()
-          return
-        }
-        if (changed && this.sock) {
-          // 换 key/地址:断开旧连接,交给 _open 建新连接
-          const old = this.sock
-          this.sock = null
-          try { old.onclose = null; old.close() } catch (e) { /* 忽略 */ }
-          if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
-        }
+        if (changed) this._teardown()
         this._open()
       },
-      _wsUrl() {
-        // 同源代理:浏览器直连 backendUrl 在跨机/隧道
-        // 场景会指向用户本机而非服务器;WS 走本插件 Host 的 /api/muche/ws
-        // 升级代理(同源经隧道),Host 进程内代理到后端。token 仍取配置 key。
-        const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws'
-        const host = typeof location !== 'undefined' ? location.host : '127.0.0.1:3080'
-        return proto + '://' + host + '/api/muche/ws?token=' + encodeURIComponent(this.cfg.apiKey)
-      },
-      _open() {
-        if (this.sock) return
-        this._setStatus('connecting')
-        let sock
-        try {
-          sock = new WebSocket(this._wsUrl())
-        } catch (e) {
-          // 构造即失败(如 https 页面连 ws:// 的混合内容拦截):记录原因,
-          // 面板可见诊断,不再无声重试
-          this.lastError = '连接被浏览器拒绝: ' + String(e && e.message ? e.message : e).slice(0, 200)
-          this._setStatus('error')
-          this._scheduleReconnect()
-          return
-        }
-        this.sock = sock
-        // 连接超时:本地/远端黑洞时 onopen 永不触发,status 卡 connecting
-        // 导致自愈跳过——10s 未 open 即视为失败,拆除重试
-        this.openTimer = setTimeout(() => {
-          if (sock.readyState === WebSocket.OPEN) return
-          this.lastError = '连接超时（10s 未建立）'
-          this.runDiag()
-          try { sock.close() } catch (e) { /* onclose 收尾 */ }
-        }, 10000)
-        sock.onopen = () => {
-          if (this.openTimer) { clearTimeout(this.openTimer); this.openTimer = null }
-          this.attempts = 0
-          this.lastError = null
-          this._setStatus('open')
-          this.pingTimer = setInterval(() => {
-            try { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'ping' })) } catch (e) { /* 忽略:断连由 onclose 收尾 */ }
-          }, 25000)
-        }
-        sock.onmessage = (ev) => {
-          let data = null
-          try { data = JSON.parse(ev.data) } catch (e) { return }
-          for (const f of this.listeners) { try { f(data) } catch (e) { /* 监听器异常不拖垮分发 */ } }
-        }
-        sock.onclose = (ev) => {
-          if (ev && ev.code && ev.code !== 1000 && ev.code !== 1006) {
-            this.lastError = '连接被关闭(code=' + ev.code + ')'
-            this.runDiag()
-          }
-          this._teardown()
-          this._scheduleReconnect()
-        }
-        sock.onerror = (ev) => {
-          // 记录错误信息(浏览器 event 可能无 message,尽力而为)
-          this.lastError = 'WebSocket 错误' + (ev && ev.message ? ': ' + String(ev.message).slice(0, 200) : '')
-          this.runDiag()
-          try { sock.close() } catch (e) { /* onclose 收尾 */ }
-        }
-      },
-      // 失败自诊断（排障口）：socket 建连失败时取一次 Host 侧探针，定位
+      // 失败自诊断（排障口）：通道建连失败时取一次 Host 侧探针，定位
       // “本机→后端”还是“浏览器→本机”。同配置只跑一次（重连退避不重复打
       // 后端）；结论进 diagSummary，面板在“未连接”后直显，无需找日志。
       runDiag() {
@@ -195,34 +119,19 @@ window.__ModuleLoader__.load({
         } catch (e) { /* 同上 */ }
       },
       _teardown() {
-        if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
-        if (this.openTimer) { clearTimeout(this.openTimer); this.openTimer = null }
-        this.sock = null
-        this._teardownSse()
+        this.sseOpen = false
+        if (this.es) {
+          const old = this.es
+          this.es = null
+          try { old.close() } catch (e) { /* 忽略 */ }
+        }
         this._setStatus('closed')
       },
-      _scheduleReconnect() {
-        if (this.reconnectTimer) return
-        const delay = Math.min(30000, 3000 * Math.pow(2, Math.min(this.attempts, 4)))
-        this.attempts += 1
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null
-          if (this.cfg && this.cfg.apiKey) this._open()
-        }, delay)
-      },
-      // 连接自愈:页面级周期检查(30s)。cfg 缺失(官方镜像尚未就绪)则重读
-      // 镜像再连;已配置但未连接则补连。保证 muche/dsh 重启后最终恢复。
-      // SSE 模式:EventSource 自带断线重连,此处只补“已彻底关闭”态。
+      // 连接自愈:页面级周期检查(30s)。EventSource 自带断线重连，此处只补
+      // “已彻底关闭”态；cfg 缺失则重读镜像再连。保证 muche/dsh 重启后最终恢复。
       ensureConnected() {
         if (this.isOpen()) return
-        if (!useNativeWs()) {
-          if (this.status !== 'connecting') this._openSse()
-          return
-        }
-        // connecting 状态若超过 10s(openTimer 已触发 close)会转 closed;
-        // 此处兜底:卡在 connecting 且无 sock 则强制重开
-        if (this.status === 'connecting' && !this.sock) { this._setStatus('closed'); this._open(); return }
-        if (this.status === 'connecting') return
+        if (this.status === 'connecting') return // EventSource 重连中
         if (this.cfg && this.cfg.apiKey) {
           this._open()
           return
@@ -234,16 +143,15 @@ window.__ModuleLoader__.load({
         for (const f of this.listeners) { try { f({ type: '_status', status: s }) } catch (e) { /* 同上 */ } }
       },
       subscribe(f) { this.listeners.push(f); return () => { this.listeners = this.listeners.filter((x) => x !== f) } },
-      isOpen() { return (this.sock !== null && this.sock.readyState === 1) || this.sseOpen === true },
+      isOpen() { return this.sseOpen === true },
+      // 上行恒走 HTTP：调用方 send() 在 false 时自动降级走同 mid 的 HTTP
+      // 发送（见 ChatPanel send），幂等由后端 ingress 边界负责。
       send(obj) {
-        // SSE 模式上行恒走 HTTP（调用方 send() 在 false 时自动降级，同 mid 幂等）。
-        if (this.sseOpen === true) return false
-        if (!this.isOpen()) return false
-        try { this.sock.send(JSON.stringify(obj)); return true } catch (e) { return false }
+        return false
       },
-      // SSE 下行（非 http(s) 页专用）：同源相对地址走 Electron 协议拦截，
-      // 与 apiGet 同门。帧进同一 listeners 总线，React 零改动。
-      _openSse() {
+      // SSE 下行：同源相对地址（与 apiGet 同门：http(s) 与 dsh-app:// 通用）。
+      // 帧进同一 listeners 总线，React 零改动。
+      _open() {
         if (this.es) return
         if (typeof EventSource === 'undefined') {
           this.lastError = '当前页面不支持 SSE'
@@ -263,7 +171,6 @@ window.__ModuleLoader__.load({
         }
         this.es = es
         es.onopen = () => {
-          this.attempts = 0
           this.lastError = null
           this.sseOpen = true
           this._setStatus('open')
@@ -286,14 +193,6 @@ window.__ModuleLoader__.load({
           } catch (e) { /* 忽略 */ }
         }
       },
-      _teardownSse() {
-        this.sseOpen = false
-        if (this.es) {
-          const old = this.es
-          this.es = null
-          try { old.close() } catch (e) { /* 忽略 */ }
-        }
-      },
       newId(prefix) { this.msgSeq += 1; return prefix + '-' + Date.now() + '-' + this.msgSeq },
     }
 
@@ -310,17 +209,9 @@ window.__ModuleLoader__.load({
       return '探针异常：' + (res.error || '未知')
     }
 
-    // 面板所在页的源（只取协议+主机，不含路径与参数）：WS 与 HTTP 同源，
-    // 连不上时把“经什么地址连的”摆出来——主机名写法（127.0.0.1/localhost/
-    // 域名）与协议（http/https）是浏览器到本机这一跳的唯一定位。
-    // 原生 WS 可用判定：只有 http(s) 页走原生 WS；dsh-app:// 等自定义协议页
-    // 原生 WS 结构上不可用（无 DNS＋跨源门），下行走 SSE，上行走 HTTP。
-    function useNativeWs() {
-      try {
-        if (typeof location === 'undefined') return true
-        return location.protocol === 'http:' || location.protocol === 'https:'
-      } catch (e) { return true }
-    }
+    // 面板所在页的源（只取协议+主机，不含路径与参数）：下行统一走 SSE，
+    // 连不上时把“经什么地址连的”摆出来——主机名写法与协议是浏览器到本机
+    // 这一跳的唯一定位。
     function wsVia() {
       try {
         if (typeof location === 'undefined' || !location.host) return ''
@@ -483,6 +374,9 @@ window.__ModuleLoader__.load({
       const inputRef = React.useRef(null)
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState('')
+      // 本机空档说明（OI-078 真空态）："抽屉是空的"写清抽屉号，与"没找对"的
+      // 错误码区分；有消息时不渲染（见 msgs 为空判定）。
+      const [emptyNote, setEmptyNote] = React.useState('')
       const [quotaUntil, setQuotaUntil] = React.useState(0)
       const [pos, setPos] = React.useState(null)
       const listRef = React.useRef(null)
@@ -648,23 +542,47 @@ window.__ModuleLoader__.load({
         syncChainRef.current = run.then(() => undefined, () => undefined)
         return run
       }, [])
-      const loadHistory = React.useCallback(() => {
-        apiGet('/api/muche/local-history?limit=20').then((res) => {
+      // 先读本地渲染（OI-078 读>同步）：开门/重开先给本地内容，同步只做
+      // 后台追认。返回是否读到（身份失败即 false，调用方跳过同步不覆盖指引）。
+      const loadHistory = React.useCallback((limit) => {
+        const n = Math.max(1, Math.min(200, Number(limit) || 20))
+        return apiGet('/api/muche/local-history?limit=' + n).then((res) => {
           if (res && res.ok) {
             // 钉住的报错不受刷新影响，一直显示到发新消息。
             // 本地 reset_mark 行按系统提醒渲染（normalize 保留 kind）。
-            setMsgs(withSticky(normalize(res.messages)))
+            const page = normalize(res.messages)
+            setMsgs(withSticky(page))
             setHasMore(!!res.has_more)
             setNextBefore(res.next_before || null)
             setError('')
-          } else if (res && !res.ok && res.error) {
-            // 首装未配 key 时后端回可操作指引：开门即见，不再静默空白。
+            // 真空态：本地行为空即"抽屉是空的"，写清抽屉号（meta.userHash6），
+            // 与身份失败的错误码区分开。
+            if (page.length === 0) {
+              const hash6 = res.meta && typeof res.meta.userHash6 === 'string' ? res.meta.userHash6 : ''
+              setEmptyNote('本机暂无聊天记录' + (hash6 ? '（抽屉' + hash6 + '为空）' : ''))
+            } else {
+              setEmptyNote('')
+            }
+            return true
+          }
+          if (res && !res.ok && res.error) {
+            // 身份失败（NEED_KEY/NEED_SETUP/AUTH_FAILED）：只显指引，不读档。
             setError(res.error)
           }
-        }).catch(() => { /* 静默:下次打开/广播再试 */ })
+          return false
+        }).catch(() => false)
       }, [])
+      // 刷新 = 先本地后同步（OI-074 交错语义不动：同步失败保留内存现状，
+      // 只钉一句"显示的是本机存档"；身份失败时连同步都不发，指引不被覆盖）。
       const refreshFromLocal = React.useCallback(() => {
-        return triggerSync().then((ok) => { if (ok) loadHistory() })
+        return loadHistory().then((ok) => {
+          if (!ok) return false
+          return triggerSync().then((syncOk) => {
+            if (syncOk) return loadHistory()
+            setError('同步失败，显示的是本机存档')
+            return false
+          })
+        })
       }, [triggerSync, loadHistory])
       React.useEffect(() => {
         if (!open) return
@@ -687,24 +605,28 @@ window.__ModuleLoader__.load({
       const loadOlder = () => {
         // OI-070 本地口径：本地无 before 游标，翻页即 limit 翻倍重读
         // （本地文件全量在机，200 上限内一次到位，无第二套游标）。
-        // OI-074：同样等同步成功后再整页替换，失败则保留现状。
+        // OI-078 读>同步：先本地放大读（即时翻页），再后台同步追认；
+        // OI-074：同步失败保留现状（只钉一句，不替换）。
         if (loadingOlder || !hasMore) return
         setLoadingOlder(true)
         const el = listRef.current
         const prevHeight = el ? el.scrollHeight : 0
         const prevScrollTop = el ? el.scrollTop : 0
         const nextLimit = Math.min(200, msgs.length + 20)
-        triggerSync().then((ok) => {
+        preserveRef.current = { prevHeight, prevScrollTop }
+        loadHistory(nextLimit).then((ok) => {
           if (!ok) { setLoadingOlder(false); return }
-          apiGet('/api/muche/local-history?limit=' + nextLimit).then((res) => {
-            setLoadingOlder(false)
-            if (res && res.ok) {
-              preserveRef.current = { prevHeight, prevScrollTop }
-              setMsgs(withSticky(normalize(res.messages)))
-              setHasMore(!!res.has_more)
-              setNextBefore(res.next_before || null)
+          triggerSync().then((syncOk) => {
+            if (!syncOk) {
+              setLoadingOlder(false)
+              setError('同步失败，显示的是本机存档')
+              return
             }
-          }).catch(() => setLoadingOlder(false))
+            loadHistory(nextLimit).then(() => {
+              setLoadingOlder(false)
+              preserveRef.current = { prevHeight, prevScrollTop }
+            })
+          })
         })
       }
 
@@ -880,6 +802,7 @@ window.__ModuleLoader__.load({
           ) : null,
           error ? h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-state-error-primary)' } }, '⚠️ ' + error) : null,
           loading ? h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-tertiary)' } }, '加载中…') : null,
+          (msgs.length === 0 && !loading && !error && emptyNote) ? h('div', { style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', margin: '18px 0' } }, emptyNote) : null,
           rows,
         ),
         quotaUntil > Date.now() ? h('div', { style: { padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } },
@@ -1019,7 +942,7 @@ window.__ModuleLoader__.load({
           '填后端地址和 API key（小沐后台生成），保存即用。'),
         row('小沐后端地址', h('input', {
           className: 'muche-field', value: backendUrl,
-          placeholder: '默认同机直连，免填',
+          placeholder: '远端填 https://公网地址/api，同机填 http://127.0.0.1:8000（空＝未配置）',
           onChange: (e) => { dirtyRef.current = true; setBackendUrl(e.target.value) },
         })),
         row('API key', h('div', { style: { position: 'relative' } },

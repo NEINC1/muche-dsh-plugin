@@ -12,11 +12,14 @@ const BUNDLE = readFileSync(new URL('../client/client.js', import.meta.url), 'ut
 
 test('面板读本地口（local-history），不直读服务端 history 整页替换', () => {
   assert.ok(/\/api\/muche\/local-history/.test(BUNDLE), '未调用本地 history 口')
-  // loadHistory / loadOlder 不得再调服务端 history 口
+  // loadHistory / loadOlder 不得再调服务端 history 口（loadOlder 经 loadHistory 间接走本地口）
   const loadHistory = BUNDLE.match(/const loadHistory = [\s\S]*?\}, \[\]\)/)
   assert.ok(loadHistory, '未找到 loadHistory')
   assert.ok(!/\/api\/muche\/history/.test(loadHistory[0]), 'loadHistory 仍直调服务端 history')
-  assert.ok(/loadOlder = \(\) => \{[\s\S]*?local-history/.test(BUNDLE), 'loadOlder 未走本地口')
+  const loadOlder = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
+  assert.ok(loadOlder, '未找到 loadOlder')
+  assert.ok(/loadHistory\(/.test(loadOlder[0]), 'loadOlder 未经 loadHistory 走本地口')
+  assert.ok(!/\/api\/muche\/history/.test(loadOlder[0]), 'loadOlder 仍直调服务端 history')
 })
 
 test('打开面板与跨端广播先同步再读本地', () => {
@@ -44,10 +47,12 @@ test('OI-074 刷新等同步完成再读本地', () => {
   assert.ok(/triggerSync\(\)\.then/.test(refresh[0]), '读本地未等同步完成（fire-and-forget 会读到同步前快照）')
 })
 
+// OI-074＋OI-078：同步失败不整页替换（保留在途行，只钉一句本机存档说明）。
 test('OI-074 同步失败不整页替换（保留在途行）', () => {
   const refresh = BUNDLE.match(/const refreshFromLocal = [\s\S]*?\}, \[triggerSync, loadHistory\]\)/)
   assert.ok(refresh, '未找到 refreshFromLocal')
-  assert.ok(/if \(ok\)/.test(refresh[0]), '同步失败仍替换显示，在途行会被旧快照吞掉')
+  assert.ok(/同步失败，显示的是本机存档/.test(refresh[0]), '同步失败未钉本机存档说明')
+  assert.ok(!/setMsgs/.test(refresh[0]), '同步失败路径仍替换显示，在途行会被旧快照吞掉')
 })
 
 test('OI-074 同步串行排队（防并发写本地竞态）', () => {

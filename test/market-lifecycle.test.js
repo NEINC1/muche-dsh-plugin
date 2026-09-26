@@ -60,7 +60,7 @@ test('桥接缺依赖时停用不抛（面板照常）', async () => {
 })
 
 test('首装空 key 时面板开门即见指引', () => {
-  const m = CLIENT_SRC.match(/const loadHistory = React\.useCallback\(\(\) => \{([\s\S]*?)\n      \}, \[\]\)/)
+  const m = CLIENT_SRC.match(/const loadHistory = React\.useCallback\([^=]*=> \{([\s\S]*?)\n      \}, \[\]\)/)
   assert.ok(m, '未找到 loadHistory')
   assert.ok(/!res\.ok/.test(m[1]), 'loadHistory 未处理 !ok 分支——首装空 key 时面板仍静默空白')
   assert.ok(/setError\(res\.error\)/.test(m[1]), 'loadHistory 失败时未把后端指引钉出来')

@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 
-import { probeBackendUpgrade } from '../lib/ws-proxy.js'
+import { probeBackendUpgrade } from '../lib/backend_ws.js'
 
 /** 假后端：upgrade 一律 403（模拟鉴权拒绝），记录收到的 path。 */
 function fakeBackend() {

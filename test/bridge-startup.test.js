@@ -12,7 +12,7 @@
  *
  * 覆盖：
  *  - guard：撞重复吞掉记降级；非撞车原样抛；成功 true；
- *  - 双 apply：第二份不抛、degraded=true、首份路由保留、升级入口同样；
+ *  - 双 apply：第二份不抛、degraded=true、首份路由保留；
  *  - /api/muche/status：返回 fibers 数组形状；
  *  - 缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖 + refresh 即上线；
  *  - 缺依赖且永不补：有界重试不 hanging（unref），dispose 干净。
@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 import { createRegistrationGuard } from '../lib/register-guard.js'
 import { registerRoutes } from '../lib/routes.js'
-import { registerWsProxy } from '../lib/ws-proxy.js'
+import { registerPanelEvents } from '../lib/panel-events.js'
 import { registerDshBridge, requestDshBridgeRefresh, getDshBridgeStatus } from '../lib/dsh-bridge.js'
 
 const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
@@ -242,7 +242,7 @@ test('缺依赖且永不补：有界重试后安静，dispose 干净无残留', 
   assert.equal(getDshBridgeStatus().fibers.length, mine - 1)
 })
 
-test('卸载清理：live-remove 后路由/升级入口释放，重装不再撞车', () => {
+test('卸载清理：live-remove 后路由释放，重装不再撞车', () => {
   // 复现 2026-09-23 桌面端开关事故：关（dispose）不清路由 → 开（重 apply）必撞。
   // 官方契约：register 返回 disposer；桌面端官方写法 ctx.effect(() => register(...))。
   const table = sharedWebServer()
@@ -259,14 +259,14 @@ test('卸载清理：live-remove 后路由/升级入口释放，重装不再撞�
     },
   })
   assert.equal(registerRoutes(mk(), config), false)
-  assert.equal(registerWsProxy(mk(), config), false)
+  assert.equal(registerPanelEvents(mk(), config), false)
   const used = table.routes.size
-  assert.ok(used >= 8, `路由+升级入口应注册，实际 ${used} 条`)
+  assert.ok(used >= 9, `路由（含 events）应注册，实际 ${used} 条`)
   // 模拟卸载：纤程 dispose 跑 effect 清理。
   for (const dispose of cleanups.splice(0)) dispose()
   assert.equal(table.routes.size, 0)
   // 重装：同一张表全新 apply，不抛且非降级（主纤程）。
   assert.equal(registerRoutes(mk(), config), false)
-  assert.equal(registerWsProxy(mk(), config), false)
+  assert.equal(registerPanelEvents(mk(), config), false)
   assert.equal(table.routes.size, used)
 })
