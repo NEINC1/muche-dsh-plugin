@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.14），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.15），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -40,21 +40,6 @@ dsh plugin remove 'muche-dsh-plugin'
 ```
 
 `remove` 只摘层与代码；本机配置（profile patch 里 `muche` 条目的配置）与本地聊天存档（工作区 `messages/` 目录）保留，重装免配，旧话仍在。装完在托盘重启 DSH Desktop 生效。彻底清掉：删掉 profile patch 里 `muche` 条目的 `config` 段，并手动删除工作区 `messages/` 目录。
-
-## 故障排查
-
-| 现象 | 原因 | 做法 |
-|---|---|---|
-| 安装后启动失败：`1 entry did not activate muche`／`settings.register is not a function` | 插件低于 0.4.11，仍调已被官方删掉的旧 settings 接口 | 重跑安装命令升到 0.4.11（只认官方 `0.1.7-rc.2` 同 cohort），重启 Desktop |
-| 面板显示“连接不上” | 后端地址缺 `/api` 前缀，打到 SPA 首页 | 远端地址改为 `<基址>/api` |
-| 面板显示“实时通道未连接” | “未连接”后跟的诊断结论即分段定位（失败时自动跑一次探针，同配置不重复） | 结论是“本机到后端通”→查浏览器到本机；“本机到后端不通（tcp/dns/tls/timeout）”→按括号里修网络；“后端地址配错”→改设置页地址 |
-| 面板 401，桥接也不在线 | API key 失效（账号重置或后台吊销） | 去小沐后台重签，到设置页更新 |
-| 小沐说“dsh 没连上” | 本机 dsh 未运行，或插件版本低于桥接要求 | 先启动本机 dsh，再重跑安装命令升级插件 |
-| 面板正常但桥接不工作 | dsh 本体缺本地执行依赖，或插件被加载两次（桌面端市场与 bundles 双挂载） | 看 dsh 日志有无反向桥接停用警告，升级 dsh 本体；桌面端到插件页确认小沐只装了一处 |
-| 要看桥到底什么状态 | 面板“在线”只证明路由可达，工具要的是桥接池在线 | 同机 `GET /api/muche/status`（需过 dsh 鉴权），看 `fibers[].mode/reason` |
-| 反向桥接任务无响应 | 同会话串行排队，或会话已失效 | 等待在途任务完成；`sN` 别名超 3 天消除后重开 |
-| 安装时报 peer 缺失（cordis/schemastery） | 新 profile 的宿主镜像还没建，属一次性瞬态 | 不用管，重启 Desktop 后 dsh 启动镜像即补齐；`dsh plugin list` 见 `muche-dsh-plugin` 在列即正常 |
-| 安装时报某子依赖 deprecated（如 node-domexception） | 警告来自桌面基础包的子树，不是本插件带的（本包零 bundle 依赖，`ws` 自身也零依赖） | 可忽略，不影响加载；等上游更新 |
 
 反向桥接只调用户本机：后端把任务帧从该用户的桥接连递下来，插件在本地 dsh 进程内执行、结果原路回传。桥不在时后端明确失败，不回退服务器。
 
