@@ -50,3 +50,23 @@ test('“未连接”文案带面板所在源（只协议+主机，无路径参�
   assert.ok(/location\.protocol.*location\.host|location\.host/.test(CLIENT), '源定位未读 location')
   assert.ok(!/location\.href|location\.search|location\.pathname/.test(CLIENT), '源定位带了路径/参数（泄漏页面细节）')
 })
+
+test('SSE 模式只在非 http(s) 页启用，原生 WS 路径不动', () => {
+  assert.ok(/useNativeWs\(\)/.test(CLIENT), '缺少原生 WS 可用判定')
+  assert.ok(/location\.protocol\s*===\s*'http:'/.test(CLIENT), '判定未覆盖 http:')
+  assert.ok(/location\.protocol\s*===\s*'https:'/.test(CLIENT), '判定未覆盖 https:')
+  assert.ok(/new WebSocket\(this\._wsUrl\(\)\)/.test(CLIENT), '原生 WS 建连被动过（http 页必须零回归）')
+})
+
+test('SSE 下行走同源相对地址，进同一监听总线', () => {
+  assert.ok(/new EventSource\('\/api\/muche\/events'\)/.test(CLIENT), 'SSE 未走同源相对地址')
+  const sseBlock = CLIENT.match(/_openSse\(\)\s*\{[\s\S]*?\n      \},/)
+  assert.ok(sseBlock, '未找到 _openSse')
+  assert.ok(/this\.listeners/.test(sseBlock[0]) || /for\s*\(const f of this\.listeners\)/.test(CLIENT), 'SSE 帧未进同一监听总线')
+})
+
+test('SSE 模式上行恒走 HTTP（send 短路，不碰空 socket）', () => {
+  const sendBlock = CLIENT.match(/send\(obj\)\s*\{[\s\S]*?\n      \},/)
+  assert.ok(sendBlock, '未找到 send')
+  assert.ok(/sseOpen/.test(sendBlock[0]), 'send 未处理 SSE 模式（空 socket 直调会抛）')
+})

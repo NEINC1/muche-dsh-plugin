@@ -95,10 +95,20 @@ window.__ModuleLoader__.load({
       msgSeq: 0,
       diagSummary: null, // 本机→后端探针结论（人话），失败自诊断一次后填入，面板直显
       diagKey: '', // 探针已跑过的配置指纹（同配置不重复打后端）
+      es: null, // SSE 模式下行通道（仅非 http(s) 页）
+      sseOpen: false,
       start(cfg) {
         const changed = !!cfg && (this.cfg === null || cfg.apiKey !== this.cfg.apiKey || cfg.backendUrl !== this.cfg.backendUrl)
         this.cfg = cfg || this.cfg
         if (!this.cfg || !this.cfg.apiKey) { this._teardown(); return }
+        // 非 http(s) 页（桌面端 dsh-app:// 自定义协议）：原生 WebSocket 结构上
+        // 不可用（ws:// 无 DNS、跨源被官方门拦），下行走同源 SSE（Host 代持上游），
+        // 上行走既有 HTTP 降级。http(s) 页走原生 WS，行为与之前一字不差。
+        if (!useNativeWs()) {
+          if (changed) this._teardownSse()
+          this._openSse()
+          return
+        }
         if (changed && this.sock) {
           // 换 key/地址:断开旧连接,交给 _open 建新连接
           const old = this.sock
@@ -188,6 +198,7 @@ window.__ModuleLoader__.load({
         if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
         if (this.openTimer) { clearTimeout(this.openTimer); this.openTimer = null }
         this.sock = null
+        this._teardownSse()
         this._setStatus('closed')
       },
       _scheduleReconnect() {
@@ -201,8 +212,13 @@ window.__ModuleLoader__.load({
       },
       // 连接自愈:页面级周期检查(30s)。cfg 缺失(官方镜像尚未就绪)则重读
       // 镜像再连;已配置但未连接则补连。保证 muche/dsh 重启后最终恢复。
+      // SSE 模式:EventSource 自带断线重连,此处只补“已彻底关闭”态。
       ensureConnected() {
         if (this.isOpen()) return
+        if (!useNativeWs()) {
+          if (this.status !== 'connecting') this._openSse()
+          return
+        }
         // connecting 状态若超过 10s(openTimer 已触发 close)会转 closed;
         // 此处兜底:卡在 connecting 且无 sock 则强制重开
         if (this.status === 'connecting' && !this.sock) { this._setStatus('closed'); this._open(); return }
@@ -218,10 +234,65 @@ window.__ModuleLoader__.load({
         for (const f of this.listeners) { try { f({ type: '_status', status: s }) } catch (e) { /* 同上 */ } }
       },
       subscribe(f) { this.listeners.push(f); return () => { this.listeners = this.listeners.filter((x) => x !== f) } },
-      isOpen() { return this.sock !== null && this.sock.readyState === 1 },
+      isOpen() { return (this.sock !== null && this.sock.readyState === 1) || this.sseOpen === true },
       send(obj) {
+        // SSE 模式上行恒走 HTTP（调用方 send() 在 false 时自动降级，同 mid 幂等）。
+        if (this.sseOpen === true) return false
         if (!this.isOpen()) return false
         try { this.sock.send(JSON.stringify(obj)); return true } catch (e) { return false }
+      },
+      // SSE 下行（非 http(s) 页专用）：同源相对地址走 Electron 协议拦截，
+      // 与 apiGet 同门。帧进同一 listeners 总线，React 零改动。
+      _openSse() {
+        if (this.es) return
+        if (typeof EventSource === 'undefined') {
+          this.lastError = '当前页面不支持 SSE'
+          this._setStatus('error')
+          this.runDiag()
+          return
+        }
+        this._setStatus('connecting')
+        let es
+        try {
+          es = new EventSource('/api/muche/events')
+        } catch (e) {
+          this.lastError = 'SSE 建连被拒绝: ' + String(e && e.message ? e.message : e).slice(0, 200)
+          this._setStatus('error')
+          this.runDiag()
+          return
+        }
+        this.es = es
+        es.onopen = () => {
+          this.attempts = 0
+          this.lastError = null
+          this.sseOpen = true
+          this._setStatus('open')
+        }
+        es.onmessage = (ev) => {
+          let data = null
+          try { data = JSON.parse(ev.data) } catch (e) { return }
+          for (const f of this.listeners) { try { f(data) } catch (e) { /* 监听器异常不拖垮分发 */ } }
+        }
+        es.onerror = () => {
+          // EventSource 自带退避重连：CONNECTING 是重连中，不记错；
+          // 彻底关闭才记错并跑一次诊断（同配置一次）。
+          try {
+            if (es.readyState === EventSource.CLOSED) {
+              this.sseOpen = false
+              this.lastError = '事件通道中断'
+              this._setStatus('closed')
+              this.runDiag()
+            }
+          } catch (e) { /* 忽略 */ }
+        }
+      },
+      _teardownSse() {
+        this.sseOpen = false
+        if (this.es) {
+          const old = this.es
+          this.es = null
+          try { old.close() } catch (e) { /* 忽略 */ }
+        }
       },
       newId(prefix) { this.msgSeq += 1; return prefix + '-' + Date.now() + '-' + this.msgSeq },
     }
@@ -242,6 +313,14 @@ window.__ModuleLoader__.load({
     // 面板所在页的源（只取协议+主机，不含路径与参数）：WS 与 HTTP 同源，
     // 连不上时把“经什么地址连的”摆出来——主机名写法（127.0.0.1/localhost/
     // 域名）与协议（http/https）是浏览器到本机这一跳的唯一定位。
+    // 原生 WS 可用判定：只有 http(s) 页走原生 WS；dsh-app:// 等自定义协议页
+    // 原生 WS 结构上不可用（无 DNS＋跨源门），下行走 SSE，上行走 HTTP。
+    function useNativeWs() {
+      try {
+        if (typeof location === 'undefined') return true
+        return location.protocol === 'http:' || location.protocol === 'https:'
+      } catch (e) { return true }
+    }
     function wsVia() {
       try {
         if (typeof location === 'undefined' || !location.host) return ''
