@@ -44,3 +44,9 @@ test('“未连接”文案追加诊断结论', () => {
     assert.ok(CLIENT.includes(stage), `summarizeDiag 未处理 stage=${stage}`)
   }
 })
+
+test('“未连接”文案带面板所在源（只协议+主机，无路径参数）', () => {
+  assert.ok(/wsViaSuffix\(\)/.test(CLIENT), '状态文案未附面板所在源')
+  assert.ok(/location\.protocol.*location\.host|location\.host/.test(CLIENT), '源定位未读 location')
+  assert.ok(!/location\.href|location\.search|location\.pathname/.test(CLIENT), '源定位带了路径/参数（泄漏页面细节）')
+})

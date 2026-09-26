@@ -239,6 +239,20 @@ window.__ModuleLoader__.load({
       return '探针异常：' + (res.error || '未知')
     }
 
+    // 面板所在页的源（只取协议+主机，不含路径与参数）：WS 与 HTTP 同源，
+    // 连不上时把“经什么地址连的”摆出来——主机名写法（127.0.0.1/localhost/
+    // 域名）与协议（http/https）是浏览器到本机这一跳的唯一定位。
+    function wsVia() {
+      try {
+        if (typeof location === 'undefined' || !location.host) return ''
+        return location.protocol + '//' + location.host
+      } catch (e) { return '' }
+    }
+    function wsViaSuffix() {
+      const via = wsVia()
+      return via ? '（经' + via + '）' : ''
+    }
+
     // ── 官方配置作用域（configForms 镜像，不自存配置） ──
     // 宿主 Config 在浏览器侧的唯一读取口：快照 { status, value, base, user,
     // revision, writable }，写经 scope.mutate（revision fence），变化经
@@ -770,8 +784,8 @@ window.__ModuleLoader__.load({
           }),
           h('span', {
             style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
-            title: [wsStore.lastError, wsStore.diagSummary].filter(Boolean).join('；') || '',
-          }, wsOpen ? '在线' : '实时通道未连接' + (wsStore.lastError ? '：' + wsStore.lastError : '') + (wsStore.diagSummary ? '；' + wsStore.diagSummary : '')),
+            title: [wsStore.lastError, wsStore.diagSummary, wsVia()].filter(Boolean).join('；') || '',
+          }, wsOpen ? '在线' : '实时通道未连接' + (wsStore.lastError ? '：' + wsStore.lastError : '') + (wsStore.diagSummary ? '；' + wsStore.diagSummary : '') + wsViaSuffix()),
           h('button', {
             type: 'button', onClick: () => panelStore.close(),
             onPointerDown: (e) => e.stopPropagation(),
