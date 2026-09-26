@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.12），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.13），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -47,6 +47,7 @@ dsh plugin remove 'muche-dsh-plugin'
 |---|---|---|
 | 安装后启动失败：`1 entry did not activate muche`／`settings.register is not a function` | 插件低于 0.4.11，仍调已被官方删掉的旧 settings 接口 | 重跑安装命令升到 0.4.11（只认官方 `0.1.7-rc.2` 同 cohort），重启 Desktop |
 | 面板显示“连接不上” | 后端地址缺 `/api` 前缀，打到 SPA 首页 | 远端地址改为 `<基址>/api` |
+| 面板显示“实时通道未连接” | 浏览器侧 WS 错误是不透明的，可能是本机到后端那一跳断了 | 浏览器打开 `http(s)://<dsh 主机>/api/muche/ws-diag`（与面板同源，凭 Cookie），看 `stage`：`backend-reached`＝本机到后端通，查浏览器到本机；`tcp/dns/tls/timeout`＝本机到后端不通，按 `error` 修网络；`target`＝后端地址配错 |
 | 面板 401，桥接也不在线 | API key 失效（账号重置或后台吊销） | 去小沐后台重签，到设置页更新 |
 | 小沐说“dsh 没连上” | 本机 dsh 未运行，或插件版本低于桥接要求 | 先启动本机 dsh，再重跑安装命令升级插件 |
 | 面板正常但桥接不工作 | dsh 本体缺本地执行依赖，或插件被加载两次（桌面端市场与 bundles 双挂载） | 看 dsh 日志有无反向桥接停用警告，升级 dsh 本体；桌面端到插件页确认小沐只装了一处 |
