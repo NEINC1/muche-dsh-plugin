@@ -1,6 +1,8 @@
 // muche-dsh-plugin — 客户端入口（浏览器）。
 // 形态：左下角「小沐」入口按钮 + 可拖动聊天浮层面板 + 设置页。
-// 所有数据经 /api/muche/* 路由直连后端，不进 dsh agent 循环（零注入）。
+// 聊天与同步数据经 /api/muche/* 路由直连后端，不进 dsh agent 循环（零注入）。
+// 配置不走自建路由：设置页与面板经官方客户端设置服务（configForms 镜像）
+// 读写，存储唯一真源是宿主 profile patch（见 lib/config.js）。
 window.__ModuleLoader__.load({
   id: 'muche-dsh-plugin',
   factory: (require) => {
@@ -176,8 +178,8 @@ window.__ModuleLoader__.load({
           if (this.cfg && this.cfg.apiKey) this._open()
         }, delay)
       },
-      // 连接自愈:页面级周期检查(30s)。cfg 缺失(首次 config 失败/被清)则重新
-      // 拉配置再连;已配置但未连接则补连。保证 muche/dsh 重启后最终恢复。
+      // 连接自愈:页面级周期检查(30s)。cfg 缺失(官方镜像尚未就绪)则重读
+      // 镜像再连;已配置但未连接则补连。保证 muche/dsh 重启后最终恢复。
       ensureConnected() {
         if (this.isOpen()) return
         // connecting 状态若超过 10s(openTimer 已触发 close)会转 closed;
@@ -188,9 +190,7 @@ window.__ModuleLoader__.load({
           this._open()
           return
         }
-        apiGet('/api/muche/config').then((res) => {
-          if (res && res.ok && res.apiKey) this.start(res)
-        }).catch(() => { /* 下个周期再试 */ })
+        syncWsFromScope() // 仍无 key 则下个周期再试
       },
       _setStatus(s) {
         this.status = s
@@ -203,6 +203,37 @@ window.__ModuleLoader__.load({
         try { this.sock.send(JSON.stringify(obj)); return true } catch (e) { return false }
       },
       newId(prefix) { this.msgSeq += 1; return prefix + '-' + Date.now() + '-' + this.msgSeq },
+    }
+
+    // ── 官方配置作用域（configForms 镜像，不自存配置） ──
+    // 宿主 Config 在浏览器侧的唯一读取口：快照 { status, value, base, user,
+    // revision, writable }，写经 scope.mutate（revision fence），变化经
+    // subscribe。命名空间＝宿主 profile 条目 id（apply 里问 /api/muche/status
+    // 要唯一真源）。WS 的启动/换连/ key 清除停连全部由此订阅驱动，不再由
+    // 设置页保存回调直调（保存与换连解耦：官方表单写入同样触发）。
+    const scopeStore = {
+      scope: null,
+      subs: [],
+      set(next) { this.scope = next; for (const f of this.subs) f() },
+      subscribe(f) { this.subs.push(f); return () => { this.subs = this.subs.filter((x) => x !== f) } },
+    }
+    function useScope() {
+      const [, force] = React.useState(0)
+      React.useEffect(() => scopeStore.subscribe(() => force((n) => n + 1)), [])
+      return scopeStore.scope
+    }
+    // 配置快照 → WS 参数同步（幂等：wsStore.start 内部比对，相同不重连；
+    // key 被清空即 teardown，与旧保存回调语义一致）。
+    function syncWsFromScope() {
+      const s = scopeStore.scope
+      if (!s) return
+      let snap = null
+      try { snap = s.getSnapshot() } catch (e) { return }
+      const v = (snap && snap.value) || {}
+      wsStore.start({
+        backendUrl: typeof v.backendUrl === 'string' ? v.backendUrl : '',
+        apiKey: typeof v.apiKey === 'string' ? v.apiKey : '',
+      })
     }
 
     // ── 小人图标（官方 IconUserOutline16 同款 SVG） ──
@@ -222,7 +253,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // ── 微信式时间 ──
+    // ── 聊天式时间 ──
     function fmtTime(iso) {
       if (!iso) return ''
       try {
@@ -784,7 +815,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // ── 设置页 ──
+    // ── 设置页（官方配置镜像读写，不走自建路由） ──
     function MucheSettingsSection() {
       const [backendUrl, setBackendUrl] = React.useState('')
       const [apiKey, setApiKey] = React.useState('')
@@ -793,24 +824,54 @@ window.__ModuleLoader__.load({
       const [testing, setTesting] = React.useState(false)
       const [saving, setSaving] = React.useState(false)
       const dirtyRef = React.useRef(false)
+      const revRef = React.useRef(undefined)
+      const scope = useScope()
       React.useEffect(() => {
-        apiGet('/api/muche/config').then((res) => {
-          if (!res || !res.ok || dirtyRef.current) return
-          setBackendUrl(res.backendUrl || '')
-          setApiKey(res.apiKey || '')
-        })
-      }, [])
+        if (!scope) return undefined
+        const pull = () => {
+          if (dirtyRef.current) return
+          let snap = null
+          try { snap = scope.getSnapshot() } catch (e) { return }
+          const user = (snap && snap.user) || {}
+          const value = (snap && snap.value) || {}
+          const base = (snap && snap.base) || {}
+          // 界面不展示地址：只显示用户自己填过的值（与 base 继承值相同即回空串）。
+          const shownBackend = typeof user.backendUrl === 'string' && user.backendUrl && user.backendUrl !== base.backendUrl
+            ? user.backendUrl
+            : ''
+          setBackendUrl(shownBackend)
+          setApiKey(typeof value.apiKey === 'string' ? value.apiKey : '')
+          revRef.current = snap ? snap.revision : undefined
+        }
+        pull()
+        return scope.subscribe(pull)
+      }, [scope])
       const save = () => {
+        if (!scope) {
+          setStatus('设置服务未就绪，稍后再试')
+          return
+        }
         setSaving(true)
         setStatus('')
-        apiPost('/api/muche/config', { backendUrl: backendUrl.trim(), apiKey: apiKey.trim() }).then((res) => {
-          setSaving(false)
-          if (res && res.ok) {
+        // 地址清空＝恢复继承（unset），与旧写路由“只在非空时 patch”同语义；
+        // key 恒写（清空即清 key）。一次 mutate 原子提交，revision 做 fence。
+        const ops = []
+        if (backendUrl.trim()) ops.push({ op: 'set', path: ['backendUrl'], value: backendUrl.trim() })
+        else ops.push({ op: 'unset', path: ['backendUrl'] })
+        ops.push({ op: 'set', path: ['apiKey'], value: apiKey.trim() })
+        Promise.resolve()
+          .then(() => scope.mutate(ops, revRef.current))
+          .then(() => {
+            setSaving(false)
+            dirtyRef.current = false
             setStatus('✓ 已保存(仅存本机 dsh 配置)')
-            // 配置变更(新 key/新地址)→ 换连 WS 长连接(旧连接由服务端或重连逻辑收尾)
-            wsStore.start({ backendUrl: backendUrl.trim(), apiKey: apiKey.trim() })
-          } else setStatus('保存失败:' + (res ? res.error : '未知错误'))
-        })
+            // WS 换连由 scope 订阅驱动（syncWsFromScope），此处不再直调。
+          })
+          .catch((e) => {
+            setSaving(false)
+            dirtyRef.current = false // 冲突时放开，让订阅拉回最新值
+            setStatus('保存失败:' + (e && e.message ? String(e.message).slice(0, 200) : '未知错误'))
+          })
       }
       const test = () => {
         setTesting(true)
@@ -875,12 +936,19 @@ window.__ModuleLoader__.load({
     // apply；此处保留 get 但禁静默返回——缺席即 loud 抛错，进 Boot 页报错而非无声消失。
     function apply(ctx) {
       const slots = ctx.get('slots')
-      if (slots === undefined) throw new Error('muche-dsh-plugin: required service "slots" is missing (declare inject: [\'slots\'])')
+      if (slots === undefined) throw new Error('muche-dsh-plugin: required service "slots" is missing (declare inject: [\'slots\', \'configForms\'])')
+      const configForms = ctx.get('configForms')
+      if (configForms === undefined || typeof configForms.get !== 'function') throw new Error('muche-dsh-plugin: required service "configForms" is missing (declare inject: [\'slots\', \'configForms\'])')
 
-      // 启动 WS 长连接(读配置;无 key 则不连,设置页保存后由 save 触发换连)
-      apiGet('/api/muche/config').then((res) => {
-        if (res && res.ok && res.apiKey) wsStore.start(res)
+      // 配置绑定：命名空间问宿主拿唯一真源（市场安装可能不是 insert id）；
+      // 拿不到按 insert id 绑。scope 就绪与变化后由订阅驱动 WS 启动/换连。
+      apiGet('/api/muche/status').then((res) => {
+        const ns = res && res.ok && typeof res.configNs === 'string' && res.configNs ? res.configNs : 'muche'
+        scopeStore.set(configForms.get(ns))
+      }).catch(() => {
+        scopeStore.set(configForms.get('muche'))
       })
+      const offScope = scopeStore.subscribe(syncWsFromScope)
       // 连接自愈:周期检查 + 回到标签页立即检查——
       // muche/dsh 重启或首次 config 失败后,连接最终自动恢复(实时弹入/红点
       // 依赖 WS 在线;HTTP fallback 只保发送不保接收)。
@@ -888,6 +956,7 @@ window.__ModuleLoader__.load({
       const onVisible = () => { if (document.visibilityState === 'visible') wsStore.ensureConnected() }
       document.addEventListener('visibilitychange', onVisible)
       ctx.on('dispose', () => {
+        offScope()
         clearInterval(selfHealTimer)
         document.removeEventListener('visibilitychange', onVisible)
       })
@@ -907,7 +976,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    exports.inject = ['slots']
+    exports.inject = ['slots', 'configForms']
     return module.exports
   },
 })

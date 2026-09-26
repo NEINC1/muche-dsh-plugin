@@ -6,7 +6,7 @@
 
 连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务。
 
-* **聊天浮层**：左下角「小沐」入口，可拖动面板，微信式气泡，未读红点，主动消息实时弹入。
+* **聊天浮层**：左下角「小沐」入口，可拖动面板，聊天气泡，未读红点，主动消息实时弹入。
 * **本地存档**：聊天记录存本机文件（面板读本地，离线后启动补拉，重置只插提醒不清旧话）。
 * **反向桥接**：小沐可调用你本机 dsh 执行任务（出站常驻连接，不开入站端口）。
 * **设置页**：后端地址 + API key，每用户各自配置。
@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.10），dsh 本体须为上游锁定的 `0.1.5-rc.2` 同 cohort（见 `pnpm-workspace.yaml`）。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.4.11），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -39,12 +39,13 @@ dsh plugin add muche-dsh-plugin
 dsh plugin remove 'muche-dsh-plugin'
 ```
 
-`remove` 只摘层与代码；本机配置（settings `muche` 命名空间）与本地聊天存档（工作区 `messages/` 目录）保留，重装免配，旧话仍在。装完在托盘重启 DSH Desktop 生效。彻底清掉：按 dsh settings 用法删掉 `muche` 命名空间，并手动删除工作区 `messages/` 目录。
+`remove` 只摘层与代码；本机配置（profile patch 里 `muche` 条目的配置）与本地聊天存档（工作区 `messages/` 目录）保留，重装免配，旧话仍在。装完在托盘重启 DSH Desktop 生效。彻底清掉：删掉 profile patch 里 `muche` 条目的 `config` 段，并手动删除工作区 `messages/` 目录。
 
 ## 故障排查
 
 | 现象 | 原因 | 做法 |
 |---|---|---|
+| 安装后启动失败：`1 entry did not activate muche`／`settings.register is not a function` | 插件低于 0.4.11，仍调已被官方删掉的旧 settings 接口 | 重跑安装命令升到 0.4.11（只认官方 `0.1.7-rc.2` 同 cohort），重启 Desktop |
 | 面板显示“连接不上” | 后端地址缺 `/api` 前缀，打到 SPA 首页 | 远端地址改为 `<基址>/api` |
 | 面板 401，桥接也不在线 | API key 失效（账号重置或后台吊销） | 去小沐后台重签，到设置页更新 |
 | 小沐说“dsh 没连上” | 本机 dsh 未运行，或插件版本低于桥接要求 | 先启动本机 dsh，再重跑安装命令升级插件 |
@@ -67,16 +68,16 @@ dsh plugin remove 'muche-dsh-plugin'
 |---|---|
 | `cordis.patch.yml` | 组合包层：`dsh plugin add` 自动进 profile 层列表，免手写 YAML |
 | `lib/index.js` | Host 入口（inject/apply） |
-| `lib/config.js` | settings 命名空间 `muche` + 旧 JSON 配置迁移 |
+| `lib/config.js` | 插件 Config（全 volatile，官方 settings 读写）+ 旧 JSON 配置迁移 |
 | `lib/http.js` | 后端 JSON 请求封装 |
-| `lib/routes.js` | `/api/muche/{chat,history,config,test}` 同源路由 |
+| `lib/routes.js` | `/api/muche/{chat,history,local-history,sync,test,status}` 同源路由（配置读写走官方服务，不在此） |
 | `lib/backend_ws.js` | 后端 WS 常驻客户端（桥接通道） |
 | `lib/ws-proxy.js` | 浏览器 WS 同源代理（backendUrl path 原样保留，远端须带 `/api` 前缀） |
 | `lib/dsh-bridge.js` + `lib/dsh-call.js` | 反向桥接：出站收 `dsh_task`，进程内直调 `sessionController` 执行，结果原路回传 |
 
 反向桥接语义（一任务只执行一次）：同 `session_id` 串行、`task_id` 去重、断连在途即失败；会话复用/新建由小沐在工作区别名里决定。`message_id` 幂等（服务端 Redis SET NX 300s）。在途追加走 `steer`（当前轮 step 边界，闲时开新轮）＋`run_id`/`task_id` 在途寻址（含首轮占位，`dsh_session_created` 早期上报）；在途授权/提问以 prepend 拦截经 `dsh_interactive` 上行、`dsh_decide` 按 id 回决，他会话一律透传。
 
-执行核按上游锁定的 `0.1.5-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
+执行核按上游锁定的 `0.1.7-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
 
 依赖：`@deepseek-ai/schemastery` 为 peer（用宿主那份）；`ws` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
 

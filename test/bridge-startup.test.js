@@ -56,10 +56,9 @@ function sharedWebServer() {
 
 function routeCtx(overrides = {}) {
   const handlers = {}
-  const stored = { backendUrl: 'http://127.0.0.1:8000', apiKey: 'k-route' }
+  const config = { backendUrl: 'http://127.0.0.1:8000', apiKey: 'k-route', workspacePath: '' }
   return {
     ctx: {
-      settings: { get: () => stored, update: async () => {} },
       connection: { requestRejection: () => undefined },
       webServer: {
         register: ({ path, handler }) => {
@@ -72,30 +71,26 @@ function routeCtx(overrides = {}) {
           handlers[key] = handler
         },
       },
+      get: () => undefined,
       ...overrides,
     },
     handlers,
-    stored,
+    config,
   }
 }
 
 function bridgeCtx({ backendUrl = '', apiKey = 'k-test', withDeps = true } = {}) {
   const tmp = mkdtempSync(join(tmpdir(), 'muche-startup-'))
-  const settings = { muche: { backendUrl, apiKey, workspacePath: tmp } }
+  const config = { backendUrl, apiKey, workspacePath: tmp }
   const sessionEvents = []
   const disposeFns = []
   const ctx = {
-    settings: {
-      register() {},
-      get: (ns) => settings[ns],
-      update: async (ns, patch) => Object.assign(settings[ns], patch),
-    },
     on: (ev, fn) => {
       if (ev === 'dispose') disposeFns.push(fn)
       return () => {}
     },
     get: (name) => ctx[name],
-    _settings: settings,
+    _config: config,
     _dispose: disposeFns,
   }
   if (withDeps) {
@@ -168,32 +163,32 @@ test('guard：撞重复吞掉记降级；非撞车原样抛', () => {
 
 test('双 apply：第二份不抛、degraded=true、首份路由保留', () => {
   const table = sharedWebServer()
+  const config = { backendUrl: '', apiKey: '', workspacePath: '' }
   const mk = () => ({
-    settings: { get: () => ({ backendUrl: '', apiKey: '' }), update: async () => {} },
     connection: { requestRejection: () => undefined },
     webServer: table,
     get: () => undefined,
     on: () => () => {},
   })
   const g1 = createRegistrationGuard()
-  assert.equal(registerRoutes(mk(), g1), false)
+  assert.equal(registerRoutes(mk(), config, g1), false)
   const before = table.routes.size
-  assert.ok(before >= 6, `首份应注册 chat/image/history/config/test/status，共 ${before} 条`)
+  assert.ok(before >= 7, `首份应注册 chat/image/history/local-history/sync/test/status，共 ${before} 条`)
   const g2 = createRegistrationGuard()
-  assert.equal(registerRoutes(mk(), g2), true)
+  assert.equal(registerRoutes(mk(), config, g2), true)
   assert.equal(table.routes.size, before)
 })
 
 test('index 接线：副纤程跳过桥接，主纤程唯一执行', () => {
   assert.ok(/guard\.degraded/.test(INDEX_SRC), 'index 未凭 guard.degraded 分流主副纤程')
-  assert.ok(/registerDshBridge\(ctx\)/.test(INDEX_SRC), 'index 未注册桥接')
-  assert.ok(INDEX_SRC.indexOf('guard.degraded') < INDEX_SRC.indexOf('registerDshBridge(ctx)'),
+  assert.ok(/registerDshBridge\(ctx, config\)/.test(INDEX_SRC), 'index 未注册桥接')
+  assert.ok(INDEX_SRC.indexOf('guard.degraded') < INDEX_SRC.indexOf('registerDshBridge(ctx, config)'),
     '桥接注册应在降级判断之后')
 })
 
 test('/api/muche/status：返回 fibers 数组形状', async () => {
-  const { ctx, handlers } = routeCtx()
-  registerRoutes(ctx)
+  const { ctx, handlers, config } = routeCtx()
+  registerRoutes(ctx, config)
   const handler = handlers['/api/muche/status']
   assert.ok(handler, '缺少 /api/muche/status 路由')
   let code = 0
@@ -212,7 +207,7 @@ test('缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖+
   const backend = await startFakeBackend()
   const ctx = bridgeCtx({ backendUrl: backend.url, withDeps: false })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     await new Promise((r) => setTimeout(r, 400))
     assert.equal(backend.conns.length, 0)
     let st = getDshBridgeStatus()
@@ -239,7 +234,7 @@ test('缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖+
 test('缺依赖且永不补：有界重试后安静，dispose 干净无残留', async () => {
   const backend = await startFakeBackend()
   const ctx = bridgeCtx({ backendUrl: backend.url, apiKey: 'k-nodeps', withDeps: false })
-  registerDshBridge(ctx)
+  registerDshBridge(ctx, ctx._config)
   await new Promise((r) => setTimeout(r, 400))
   assert.equal(backend.conns.length, 0)
   const mine = getDshBridgeStatus().fibers.length
@@ -252,8 +247,8 @@ test('卸载清理：live-remove 后路由/升级入口释放，重装不再撞�
   // 官方契约：register 返回 disposer；桌面端官方写法 ctx.effect(() => register(...))。
   const table = sharedWebServer()
   const cleanups = []
+  const config = { backendUrl: '', apiKey: '', workspacePath: '' }
   const mk = () => ({
-    settings: { get: () => ({ backendUrl: '', apiKey: '' }), update: async () => {} },
     connection: { requestRejection: () => undefined },
     webServer: table,
     get: () => undefined,
@@ -263,15 +258,15 @@ test('卸载清理：live-remove 后路由/升级入口释放，重装不再撞�
       return () => {}
     },
   })
-  assert.equal(registerRoutes(mk()), false)
-  assert.equal(registerWsProxy(mk()), false)
+  assert.equal(registerRoutes(mk(), config), false)
+  assert.equal(registerWsProxy(mk(), config), false)
   const used = table.routes.size
-  assert.ok(used >= 7, `路由+升级入口应注册，实际 ${used} 条`)
+  assert.ok(used >= 8, `路由+升级入口应注册，实际 ${used} 条`)
   // 模拟卸载：纤程 dispose 跑 effect 清理。
   for (const dispose of cleanups.splice(0)) dispose()
   assert.equal(table.routes.size, 0)
   // 重装：同一张表全新 apply，不抛且非降级（主纤程）。
-  assert.equal(registerRoutes(mk()), false)
-  assert.equal(registerWsProxy(mk()), false)
+  assert.equal(registerRoutes(mk(), config), false)
+  assert.equal(registerWsProxy(mk(), config), false)
   assert.equal(table.routes.size, used)
 })

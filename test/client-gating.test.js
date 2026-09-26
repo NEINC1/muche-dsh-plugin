@@ -33,6 +33,25 @@ test('bundle exports.inject 声明 slots（fiber 激活门控）', () => {
   )
 })
 
+test('bundle exports.inject 声明 configForms（官方配置镜像门控）', () => {
+  const m = BUNDLE.match(/exports\.inject\s*=\s*(\[[^\]]*\])/)
+  assert.ok(m, 'bundle 未找到 exports.inject 声明')
+  const decl = m[1]
+  assert.ok(
+    /['"]configForms['"]/.test(decl),
+    `exports.inject 缺少 'configForms'，当前=${decl}——配置须走官方服务`,
+  )
+})
+
+test('bundle 配置走官方 scope，不调自建 config 路由', () => {
+  assert.ok(/configForms\.get\(/.test(BUNDLE), '未见 configForms.get 绑定')
+  assert.ok(/scope\.mutate\(/.test(BUNDLE), '保存未走 scope.mutate')
+  assert.ok(
+    !/\/api\/muche\/config/.test(BUNDLE),
+    '仍在调自建 /api/muche/config——配置读写须走官方服务',
+  )
+})
+
 test('bundle apply 禁 slots 缺席静默返回（失败须 loud）', () => {
   const m = BUNDLE.match(/function apply\(ctx\)\s*\{([\s\S]*?)\n    \}/)
   assert.ok(m, 'bundle 未找到 apply(ctx) 主体')

@@ -22,19 +22,12 @@ import { registerDshBridge, requestDshBridgeRefresh } from '../lib/dsh-bridge.js
 
 function makeCtx({ backendUrl = '', apiKey = 'k-test' } = {}) {
   const tmp = mkdtempSync(join(tmpdir(), 'muche-bridge-'))
-  const settings = {
-    muche: { backendUrl, apiKey, workspacePath: tmp },
-  }
+  const config = { backendUrl, apiKey, workspacePath: tmp }
   const sessionEvents = []
   const created = []
   const prompted = []
   const disposeFns = []
   const ctx = {
-    settings: {
-      register() {},
-      get: (ns) => settings[ns],
-      update: async (ns, patch) => Object.assign(settings[ns], patch),
-    },
     workspaceRegistry: {
       resolveByPath: async () => undefined,
       create: async () => ({ id: 'ws-1' }),
@@ -73,7 +66,7 @@ function makeCtx({ backendUrl = '', apiKey = 'k-test' } = {}) {
     },
     // 生产契约：未 inject 的服务走 ctx.get 取（市场形态软依赖）。
     get: (name) => ctx[name],
-    _settings: settings,
+    _config: config,
     _dispose: disposeFns,
     _created: created,
     _prompted: prompted,
@@ -138,7 +131,7 @@ test('round-trip：上线通道正确，下发→本机执行→ok 回传', asyn
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     assert.match(conn.url, /channel=dsh-bridge/)
     assert.match(conn.url, /token=k-test/)
@@ -160,7 +153,7 @@ test('会话复用：带 session_id 即跳过 create', async () => {
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-2', task: '继续', session_id: 'sess-old' })
     const res = await backend.waitResult(conn)
@@ -177,7 +170,7 @@ test('task_id 去重：同 id 重发不重复执行', async () => {
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     const frame = { type: 'dsh_task', task_id: 't-3', task: '只跑一次' }
     backend.sendTask(conn, frame)
@@ -197,7 +190,7 @@ test('执行失败：回 ok:false + error，不抛', async () => {
   const ctx = makeCtx({ backendUrl: backend.url })
   ctx.sessionController.prompt = async () => { throw new Error('turn 炸了') }
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-4', task: '必败' })
     const res = await backend.waitResult(conn)
@@ -212,11 +205,12 @@ test('无 apiKey：不起桥接连接', async () => {
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url, apiKey: '' })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     await new Promise((r) => setTimeout(r, 500))
     assert.equal(backend.conns.length, 0)
     // 配上 key 后 refresh 即上线
-    await ctx.settings.update('muche', { apiKey: 'k-late' })
+    // 配上 key 后 refresh 即上线（官方：表单写入提交进引用后触发 refresh）
+    ctx._config.apiKey = 'k-late'
     await requestDshBridgeRefresh()
     const conn = await backend.waitConn()
     assert.match(conn.url, /token=k-late/)
@@ -260,7 +254,7 @@ test('同会话串行：同一 session_id 两任务各得其 turn，不串扰', 
     return origOn(ev, fn)
   }
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-s1', task: '第一件', session_id: 'sess-same' })
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-s2', task: '第二件', session_id: 'sess-same' })
@@ -291,7 +285,7 @@ test('追单 append：向同一会话追消息，只发 prompt、不另起 waite
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     // append_id 去重：重发直接忽略，不重复 prompt。
     const frame = { type: 'dsh_append', append_id: 'a-1', session_id: 'sess-live', task: '再扫360残留' }
@@ -347,7 +341,7 @@ test('占位追单：首轮未结束无真 id 时按 run_id 命中在途会话�
     }, 20)
   })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     // 新会话任务（无 session_id、带 run_id）：后端占位行尚无真 id。
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-live', run_id: 'r-live', task: '全盘扫描' })
@@ -386,7 +380,7 @@ test('追单无在途会话：诚实回未知，不伪造送达、不 prompt', a
   const backend = await startFakeBackend()
   const ctx = makeCtx({ backendUrl: backend.url })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_append', append_id: 'a-ghost', run_id: 'r-gone', task: '追一个不存在的' })
     const ack = await new Promise((resolve, reject) => {
@@ -415,7 +409,7 @@ test('追单转向不可用：回落 queue 重试，不静默丢', async () => {
     if (calls === 1) throw new Error('session/steer-unavailable: current turn no longer accepts steering')
   }
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_append', append_id: 'a-fb', session_id: 'sess-fb', task: '补一句' })
     const ack = await new Promise((resolve, reject) => {
@@ -486,7 +480,7 @@ test('WP2 turn/end 六终态收敛：成功透传，失败带因，不 stuck', a
   })
   let conn
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     conn = await backend.waitConn()
     for (let i = 0; i < reasons.length; i++) {
       const taskId = `t-term-${i}`
@@ -534,7 +528,7 @@ test('WP3 授权拦截：命中在途小沐会话即认领，他会话透传', a
     }, 20)
   })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     // prepend 先于转发器/UI（spike1 顺序保证）。
     assert.equal(ctx._waterfall['approval/request'].opts.prepend, true)
@@ -598,7 +592,7 @@ test('WP3 提问拦截：答案原样回 waterfall，桥断失败闭环', async 
     }, 20)
   })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-i2', run_id: 'r-i2', task: '清磁盘' })
     await waitFor(() => ctx._prompted.length >= 1, '首条 prompt')
@@ -671,7 +665,7 @@ test('WP3 turn 终结清掉该 run 的交互等待（不留 treo tool）', async
     }, 20)
   })
   try {
-    registerDshBridge(ctx)
+    registerDshBridge(ctx, ctx._config)
     const conn = await backend.waitConn()
     backend.sendTask(conn, { type: 'dsh_task', task_id: 't-pend', run_id: 'r-pend', task: '删文件' })
     await waitFor(() => ctx._prompted.length >= 1, '首条 prompt')

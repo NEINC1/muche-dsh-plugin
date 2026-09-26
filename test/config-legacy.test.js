@@ -5,6 +5,9 @@
  * undefined，拼出来是垃圾路径 → 迁移在 Windows 上永远命中不了
  * （外层 catch 吃掉，不影响正常使用，但旧 key 用户升级后要手工重填）。
  * 治本：与 workspace.js 同源，用 os.homedir()（跟用户走，不跟安装盘）。
+ *
+ * 官方适配后：迁移写入经官方 settings 服务（`writeConfig`→`settings.update`
+ * 按条目 id），不再直写命名空间；读当前值走 `readConfig(config)`。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -16,11 +19,13 @@ import { importLegacyConfig } from '../lib/config.js'
 function emptyCtx(onUpdate) {
   return {
     settings: {
-      get: () => ({ backendUrl: '', apiKey: '', workspacePath: '' }),
       update: async (ns, patch) => onUpdate(ns, patch),
     },
+    get: () => undefined,
   }
 }
+
+const EMPTY_CONFIG = { backendUrl: '', apiKey: '', workspacePath: '' }
 
 test('旧 JSON 迁移：DSH_HOME 下的文件被导入后删除（单一真源）', async () => {
   const home = mkdtempSync(join(tmpdir(), 'muche-home-'))
@@ -30,7 +35,7 @@ test('旧 JSON 迁移：DSH_HOME 下的文件被导入后删除（单一真源�
   const prev = process.env.DSH_HOME
   process.env.DSH_HOME = home
   try {
-    await importLegacyConfig(emptyCtx((ns, patch) => { updated = { ns, patch } }))
+    await importLegacyConfig(emptyCtx((ns, patch) => { updated = { ns, patch } }), EMPTY_CONFIG)
   } finally {
     if (prev === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = prev
@@ -46,11 +51,11 @@ test('已有 key 时直接返回，不碰文件系统', async () => {
   let touched = false
   const ctx = {
     settings: {
-      get: () => ({ backendUrl: 'http://x/api', apiKey: 'muche_live', workspacePath: '' }),
       update: async () => { touched = true },
     },
+    get: () => undefined,
   }
-  await importLegacyConfig(ctx)
+  await importLegacyConfig(ctx, { backendUrl: 'http://x/api', apiKey: 'muche_live', workspacePath: '' })
   assert.equal(touched, false)
 })
 

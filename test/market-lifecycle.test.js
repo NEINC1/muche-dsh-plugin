@@ -6,7 +6,8 @@
  *    缺依赖的 profile 上整插件不进 waiting（重启即用的前提）。
  * ② 桥接缺依赖时停用不抛（面板照常）。
  * ③ 首装空 key 时面板开门即见指引（history 失败不再静默空白）。
- * ④ 配置接口不向界面展示地址（未填即空串）。
+ * ④ 配置走官方服务：自建 /api/muche/config 已删除，status 暴露 configNs
+ *   （客户端凭它向 configForms 绑定）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -50,11 +51,11 @@ test('执行链经 ctx.get 取桥接依赖（未 inject 不直取）', () => {
 
 test('桥接缺依赖时停用不抛（面板照常）', async () => {
   const fakeCtx = {
-    settings: { get: () => ({ apiKey: '', backendUrl: 'http://127.0.0.1:8000' }) },
     get: () => undefined,
     on: () => () => {},
   }
-  assert.doesNotThrow(() => registerDshBridge(fakeCtx), '缺依赖的 profile 上 registerDshBridge 不应抛')
+  const config = { backendUrl: 'http://127.0.0.1:8000', apiKey: '', workspacePath: '' }
+  assert.doesNotThrow(() => registerDshBridge(fakeCtx, config), '缺依赖的 profile 上 registerDshBridge 不应抛')
   await requestDshBridgeRefresh() // 停用后 refresh 为空操作，不应抛
 })
 
@@ -65,27 +66,24 @@ test('首装空 key 时面板开门即见指引', () => {
   assert.ok(/setError\(res\.error\)/.test(m[1]), 'loadHistory 失败时未把后端指引钉出来')
 })
 
-test('配置接口不向界面展示地址（未填即空串）', async () => {
+test('配置走官方服务：自建 config 路由已删，status 暴露 configNs', async () => {
   const handlers = {}
-  const makeCtx = (stored) => ({
-    settings: { get: () => stored, update: async () => {} },
+  const config = { backendUrl: 'http://公网/api', apiKey: 'k', workspacePath: '' }
+  const ctx = {
+    get: (name) => (name === 'loader'
+      ? { locate: () => 'muche', resolve: () => ({ options: { id: 'muche' } }) }
+      : undefined),
     connection: { requestRejection: () => undefined },
     webServer: { register: ({ path, handler }) => { handlers[path] = handler } },
-  })
-  const get = async (stored) => {
-    const ctx = makeCtx(stored)
-    registerRoutes(ctx)
-    let body = ''
-    await handlers['/api/muche/config'](
-      { method: 'GET', url: '/' },
-      { writeHead: () => {}, end: (s) => { body = s } },
-    )
-    return JSON.parse(body)
   }
-  // 未填（schema 默认值）→ 空串，不展示 127.0.0.1
-  const r1 = await get({ backendUrl: 'http://127.0.0.1:8000', apiKey: '' })
-  assert.equal(r1.backendUrl, '', '未填时配置接口仍吐出默认地址')
-  // 用户自己填过的才展示
-  const r2 = await get({ backendUrl: 'http://公网/api', apiKey: 'k' })
-  assert.equal(r2.backendUrl, 'http://公网/api', '用户填过的地址应正常展示')
+  registerRoutes(ctx, config)
+  assert.ok(!handlers['/api/muche/config'], '自建 /api/muche/config 未删（配置须走官方服务）')
+  let body = ''
+  await handlers['/api/muche/status'](
+    { method: 'GET', url: '/' },
+    { writeHead: () => {}, end: (s) => { body = s } },
+  )
+  const res = JSON.parse(body)
+  assert.equal(res.ok, true)
+  assert.equal(res.configNs, 'muche', 'status 未暴露官方配置命名空间')
 })

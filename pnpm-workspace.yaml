@@ -1,4 +1,10 @@
 minimumReleaseAgeExclude:
-  - '@deepseek-ai/dsh-brand@0.1.5-rc.2'
-  - '@deepseek-ai/dsh-credentials@0.1.5-rc.2'
-  - '@deepseek-ai/dsh-invariants@0.1.5-rc.2'
+  - '@deepseek-ai/dsh-brand@0.1.7-rc.2'
+  - '@deepseek-ai/dsh-credentials@0.1.7-rc.2'
+  - '@deepseek-ai/dsh-invariants@0.1.7-rc.2'
+
+# 开发/单测对齐官方桌面端 cohort（peer 范围不变，运行时由宿主提供）：
+# schemastery 须 ≥3.18.4 才有 .volatile()，cordis 须 4.0.4（loader volatile 提交）。
+overrides:
+  '@deepseek-ai/schemastery@>=3.18.4': 3.18.4
+  '@deepseek-ai/cordis@^4.0.1': 4.0.4
