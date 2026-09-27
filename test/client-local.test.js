@@ -77,3 +77,25 @@ test('同步失败透传原文（不吞错）', () => {
   const older = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
   assert.ok(/sync\.error/.test(older[0]), '翻页钉句未附同步原文')
 })
+
+// 显示合并（确认态＋在途覆盖层）：文件行进 base，在途行进 overlay，合并
+// 渲染；同步确认后认领退役。整页替换吞在途的路径不得回来。
+test('合并渲染：base＋overlay，无整页吞在途', () => {
+  assert.ok(/baseRef\.current = page/.test(BUNDLE), 'loadHistory 未把确认行写入 base')
+  assert.ok(/overlayRef/.test(BUNDLE), '缺少在途覆盖层 overlay')
+  assert.ok(/reconcileOverlay\(\)/.test(BUNDLE), '缺少同步确认后的认领退役')
+  assert.ok(/renderMerged\(/.test(BUNDLE), '缺少合并渲染')
+  assert.ok(/overlayAdd\(/.test(BUNDLE), '在途行未进覆盖层（仍直写显示即整页替换复发）')
+})
+
+test('真空寂静：空页不写抽屉说明', () => {
+  assert.ok(!/抽屉/.test(BUNDLE), '面板仍暴露抽屉说明，真空不寂静')
+  assert.ok(!/emptyNote/.test(BUNDLE), '空档说明状态未删除')
+})
+
+test('翻页向旧回填：本地到头调 sync-older 前插', () => {
+  const older = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
+  assert.ok(older, '未找到 loadOlder')
+  assert.ok(/\/api\/muche\/sync-older/.test(older[0]), '翻页未调向旧回填口，深历史够不着')
+  assert.ok(/reachedStart/.test(BUNDLE), '缺少探底状态，到头会反复打后端')
+})

@@ -12,13 +12,16 @@ import path from 'node:path'
 
 import {
   appendLocalRows,
+  isChronological,
+  mergeRowsChronological,
   pageLocalRows,
+  prependLocalRows,
   readLocalRows,
   readLocalState,
   userDirName,
   writeLocalState,
 } from '../lib/local-store.js'
-import { checkGeneration, syncOnce, toLocalRow } from '../lib/sync.js'
+import { buildCursor, checkGeneration, locateOlderCursor, syncOlder, syncOnce, toLocalRow } from '../lib/sync.js'
 
 async function makeDir() {
   return mkdtemp(path.join(tmpdir(), 'muche-local-'))
@@ -168,6 +171,141 @@ test('迁移：旧根缺失即空过不抛；旧根==新根只写标记', async 
     const r2 = await migrateUserArchive({ oldRoot: same, newRoot: same, userHash: userDirName('u') })
     assert.equal(r2.moved, 0)
     assert.equal(existsSync(path.join(same, ARCHIVE_MARKER)), true)
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
+
+test('多页重装全序：新页在前旧页在后不再倒挂', async (t) => {
+  const dir = await makeDir()
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const msg = (id, ts) => ({ id, role: 'user', content: id, created_at: ts, message_seq: 1 })
+  const pages = [
+    { messages: [msg('m95', '2026-03-05T00:00:00+08:00'), msg('m100', '2026-03-10T00:00:00+08:00')], has_more: true, next_before: 'c1' },
+    { messages: [msg('m90', '2026-02-28T00:00:00+08:00'), msg('m91', '2026-03-01T00:00:00+08:00')], has_more: false, next_before: '' },
+  ]
+  let calls = 0
+  const res = await syncOnce({ dir, fetchPage: async () => pages[Math.min(calls++, pages.length - 1)] })
+  assert.equal(res.added, 4)
+  const ids = (await readLocalRows(dir)).map((r) => r.id)
+  assert.deepEqual(ids, ['m90', 'm91', 'm95', 'm100'])
+  assert.equal(isChronological(await readLocalRows(dir)), true)
+})
+
+test('toLocalRow 透传 message_seq；buildCursor 缺序号即 null', () => {
+  assert.equal(toLocalRow({ id: 'x', role: 'user', content: 'c' }).message_seq, 0)
+  assert.equal(toLocalRow({ id: 'x', message_seq: 7 }).message_seq, 7)
+  assert.equal(buildCursor({ id: 'a', created_at: '2026-01-01T00:00:00+08:00', message_seq: 3 }), '2026-01-01T00:00:00+08:00|3|a')
+  assert.equal(buildCursor({ id: 'a', created_at: '', message_seq: 3 }), null)
+  assert.equal(buildCursor({ id: 'a', created_at: '2026-01-01T00:00:00+08:00', message_seq: 0 }), null)
+})
+
+test('syncOlder 向旧取一页前插， exhausted 到头', async (t) => {
+  const dir = await makeDir()
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await appendLocalRows(dir, [
+    { id: 'n2', role: 'user', content: 'n2', created_at: '2026-04-02T00:00:00+08:00', message_seq: 12 },
+    { id: 'n3', role: 'user', content: 'n3', created_at: '2026-04-03T00:00:00+08:00', message_seq: 13 },
+  ])
+  const page = {
+    messages: [{ id: 'n1', role: 'user', content: 'n1', created_at: '2026-04-01T00:00:00+08:00', message_seq: 11 }],
+    has_more: false,
+    next_before: '',
+  }
+  const out = await syncOlder({ dir, fetchPage: async (before) => {
+    assert.ok(typeof before === 'string' && before.length > 0, '回填必须带本地最旧游标')
+    return page
+  } })
+  assert.equal(out.added, 1)
+  assert.equal(out.exhausted, true)
+  assert.deepEqual((await readLocalRows(dir)).map((r) => r.id), ['n1', 'n2', 'n3'])
+  const st = await readLocalState(dir)
+  assert.equal(st.has_more_older, false)
+})
+
+test('syncOlder 有更多时存游标，下次续翻', async (t) => {
+  const dir = await makeDir()
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await appendLocalRows(dir, [
+    { id: 'n9', role: 'user', content: 'n9', created_at: '2026-05-09T00:00:00+08:00', message_seq: 9 },
+  ])
+  const out = await syncOlder({ dir, fetchPage: async () => ({
+    messages: [{ id: 'n8', role: 'user', content: 'n8', created_at: '2026-05-08T00:00:00+08:00', message_seq: 8 }],
+    has_more: true,
+    next_before: '2026-05-08T00:00:00+08:00|8|n8',
+  }) })
+  assert.equal(out.exhausted, false)
+  assert.equal((await readLocalState(dir)).oldest_cursor, '2026-05-08T00:00:00+08:00|8|n8')
+})
+
+test('locateOlderCursor 步进到含旧行页再向旧一格', async () => {
+  const pages = [
+    { messages: [{ id: 'new' }], has_more: true, next_before: 'c-new' },
+    { messages: [{ id: 'old' }], has_more: true, next_before: 'c-old' },
+  ]
+  let calls = 0
+  const cur = await locateOlderCursor({ fetchPage: async () => pages[Math.min(calls++, 1)], oldestId: 'old' })
+  assert.equal(cur, 'c-old')
+  assert.equal(await locateOlderCursor({ fetchPage: async () => ({ messages: [], has_more: false, next_before: '' }), oldestId: 'ghost' }), null)
+})
+
+test('checkGeneration 空抽屉只更新代际不插行（真空寂静）', async (t) => {
+  const dir = await makeDir()
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await writeLocalState(dir, { before: '', generation: 3 })
+  const out = await checkGeneration({ dir, fetchGeneration: async () => 4 })
+  assert.equal(out.reset, false)
+  assert.equal(out.generation, 4)
+  assert.deepEqual(await readLocalRows(dir), [])
+})
+
+test('mergeRowsChronological 去重＋全序＋无时间保序', () => {
+  assert.deepEqual(
+    mergeRowsChronological([{ id: 'b' }, { id: 'a' }], [{ id: 'a' }, { id: 'c' }]).map((r) => r.id),
+    ['b', 'a', 'c'],
+  )
+  assert.deepEqual(
+    mergeRowsChronological(
+      [{ id: '2', created_at: '2026-02-01T00:00:00+08:00' }],
+      [{ id: '1', created_at: '2026-01-01T00:00:00+08:00' }],
+    ).map((r) => r.id),
+    ['1', '2'],
+  )
+  assert.equal(isChronological([{ id: 'x' }, { id: 'y', created_at: '2026-01-01T00:00:00+08:00' }]), true)
+  assert.equal(isChronological([{ id: 'y', created_at: '2026-01-02T00:00:00+08:00' }, { id: 'x' }]), false)
+})
+
+test('prependLocalRows 去重前插', async (t) => {
+  const dir = await makeDir()
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await appendLocalRows(dir, [{ id: 'n', role: 'user', content: 'n', created_at: '2026-06-02T00:00:00+08:00' }])
+  assert.equal(await prependLocalRows(dir, [{ id: 'o', role: 'user', content: 'o', created_at: '2026-06-01T00:00:00+08:00' }]), 1)
+  assert.equal(await prependLocalRows(dir, [{ id: 'o', content: 'dup' }]), 0)
+  assert.deepEqual((await readLocalRows(dir)).map((r) => r.id), ['o', 'n'])
+})
+
+test('迁移按用户：首用户标记不挡第二用户', async () => {
+  const { mkdir, writeFile } = await import('node:fs/promises')
+  const { migrateUserArchive } = await import('../lib/local-store.js')
+  const base = await makeDir()
+  try {
+    const hashA = userDirName('per-u-a')
+    const hashB = userDirName('per-u-b')
+    const oldRoot = path.join(base, 'old')
+    const newRoot = path.join(base, 'new')
+    await mkdir(path.join(oldRoot, hashA), { recursive: true })
+    await mkdir(path.join(oldRoot, hashB), { recursive: true })
+    await writeFile(path.join(oldRoot, hashA, 'messages.jsonl'), '{"id":"ra"}\n')
+    await writeFile(path.join(oldRoot, hashB, 'messages.jsonl'), '{"id":"rb"}\n')
+    const first = await migrateUserArchive({ oldRoot, newRoot, userHash: hashA })
+    assert.equal(first.moved, 1)
+    assert.equal(first.already, false)
+    const second = await migrateUserArchive({ oldRoot, newRoot, userHash: hashB })
+    assert.equal(second.already, false)
+    assert.equal(second.moved, 1)
+    assert.ok((await readLocalRows(path.join(newRoot, hashB))).some((r) => r.id === 'rb'))
+    const repeat = await migrateUserArchive({ oldRoot, newRoot, userHash: hashA })
+    assert.equal(repeat.already, true)
   } finally {
     await rm(base, { recursive: true, force: true })
   }

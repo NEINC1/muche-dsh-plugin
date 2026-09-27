@@ -137,3 +137,28 @@ test('cutover 迁移被触发（旧根行并入新根）', async () => {
     await rm(newRoot, { recursive: true, force: true })
   }
 })
+
+test('mkdir:false 纯读零副作用（不建目录、不迁移、不清理）', async () => {
+  const oldWs = await makeRoot()
+  const newRoot = await makeRoot()
+  try {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const cfg = { backendUrl: 'https://x/api', apiKey: 'muche_k', workspacePath: oldWs }
+    const probe = await resolveLocalIdentity(cfg, okMe('peek-user'), { root: newRoot, mkdir: false })
+    assert.equal(probe.state, 'ok')
+    assert.equal(existsSync(probe.dir), false, '只看不建：禁建抽屉目录')
+    const hash = path.basename(probe.dir)
+    const oldDir = path.join(oldWs, 'messages', hash)
+    await mkdir(oldDir, { recursive: true })
+    await writeFile(path.join(oldDir, 'messages.jsonl'), '{"id":"m9"}\n')
+    const anonDir = path.join(newRoot, anonymousDirName())
+    await mkdir(anonDir, { recursive: true })
+    const second = await resolveLocalIdentity(cfg, okMe('peek-user'), { root: newRoot, mkdir: false })
+    assert.equal(second.state, 'ok')
+    assert.equal(existsSync(probe.dir), false, '读路径不得触发迁移建目录')
+    assert.equal(existsSync(anonDir), true, '读路径不得清理 anonymous（写路径才做）')
+  } finally {
+    await rm(oldWs, { recursive: true, force: true })
+    await rm(newRoot, { recursive: true, force: true })
+  }
+})

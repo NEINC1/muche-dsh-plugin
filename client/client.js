@@ -374,9 +374,8 @@ window.__ModuleLoader__.load({
       const inputRef = React.useRef(null)
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState('')
-      // 本机空档说明（OI-078 真空态）："抽屉是空的"写清抽屉号，与"没找对"的
-      // 错误码区分；有消息时不渲染（见 msgs 为空判定）。
-      const [emptyNote, setEmptyNote] = React.useState('')
+      // 真空寂静：两边都没消息时空白页，不建目录、不插行、不报错。
+      const [reachedStart, setReachedStart] = React.useState(false)
       const [quotaUntil, setQuotaUntil] = React.useState(0)
       const [pos, setPos] = React.useState(null)
       const listRef = React.useRef(null)
@@ -394,10 +393,63 @@ window.__ModuleLoader__.load({
       const quotaUntilRef = React.useRef(0)
       const setQuota = (ms) => { quotaUntilRef.current = ms; setQuotaUntil(ms) }
       const failureNotice = () => '⚠️ 这条消息暂时没处理完，请稍后重试'
-      // rows 末尾补钉住的报错（loadHistory 整页替换时调用；分页 prepend 不用）。
+      // rows 末尾补钉住的报错（合并渲染时调用）。
       const withSticky = (rows) => stuckNoticeRef.current ? [...rows, stuckNoticeRef.current] : rows
       const stickNotice = (content, ts) => {
         stuckNoticeRef.current = { role: 'assistant', content, inner_thought: '', ts }
+      }
+      // 显示合并（确认态＋在途覆盖层）：base 是本地文件确认行，overlay 是
+      // 未确认行（乐观用户行/待收账 reply/主动行）。合并渲染，整页替换不再
+      // 吞在途；overlay 被 base 认领（同角色同内容）或超时退役。
+      const baseRef = React.useRef([])
+      const overlayRef = React.useRef([])
+      const overlaySeqRef = React.useRef(0)
+      const syncSeqRef = React.useRef(0)
+      const overlayCovered = (o, base) => {
+        if (!o || typeof o !== 'object' || o.role === 'system') return false
+        const content = typeof o.content === 'string' ? o.content : ''
+        if (content && base.some((b) => b.role === o.role && b.content === content)) return true
+        if (!content) {
+          const ot = Date.parse(o.ts)
+          if (Number.isFinite(ot) && base.some((b) => {
+            if (b.role !== o.role) return false
+            if (!((b.medium === 'image') || (Number(b.image_count) > 0))) return false
+            const bt = Date.parse(b.ts)
+            return Number.isFinite(bt) && Math.abs(bt - ot) < 10 * 60 * 1000
+          })) return true
+        }
+        const born = Date.parse(o.ts)
+        if (Number.isFinite(born) && (Date.now() - born) > 180000
+          && o.birthSync !== undefined && syncSeqRef.current > o.birthSync) return true
+        return false
+      }
+      const renderMerged = (base) => {
+        const rows = [...(base || [])]
+        for (const o of overlayRef.current) {
+          if (overlayCovered(o, base)) continue
+          rows.push(o)
+        }
+        rows.sort((a, b) => {
+          const ta = Date.parse(a.ts)
+          const tb = Date.parse(b.ts)
+          if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0
+          return ta - tb
+        })
+        return withSticky(rows)
+      }
+      const overlayAdd = (rows) => {
+        const list = Array.isArray(rows) ? rows : [rows]
+        for (const r of list) {
+          if (!r || typeof r !== 'object') continue
+          overlaySeqRef.current += 1
+          overlayRef.current.push({ ...r, overlayKey: 'o' + Date.now() + '-' + overlaySeqRef.current, birthSync: syncSeqRef.current })
+        }
+        setMsgs(renderMerged(baseRef.current))
+      }
+      const reconcileOverlay = () => {
+        const base = baseRef.current
+        const kept = overlayRef.current.filter((o) => !overlayCovered(o, base))
+        if (kept.length !== overlayRef.current.length) overlayRef.current = kept
       }
 
       const handleHttpReply = (res, nowIso, mid) => {
@@ -411,13 +463,14 @@ window.__ModuleLoader__.load({
           // 只有明确失败才钉报错：等待中/被合并保持静默（新轮会回）。
           if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
             stickNotice(failureNotice(), nowIso)
-            parts.push(stuckNoticeRef.current)
+            setMsgs(renderMerged(baseRef.current))
+          } else if (parts.length > 0) {
+            overlayAdd(parts)
           }
-          setMsgs((prev) => [...prev, ...parts])
         } else {
           const error = res && res.error ? res.error : '发送失败'
           stickNotice('⚠️ ' + error, nowIso)
-          setMsgs((prev) => [...prev, stuckNoticeRef.current])
+          setMsgs(renderMerged(baseRef.current))
         }
       }
 
@@ -479,7 +532,7 @@ window.__ModuleLoader__.load({
               role: 'assistant', content: String(t), inner_thought: data.inner_thought || '', ts: nowIso,
             }))
             if (parts.length > 0) {
-              setMsgs((prev) => [...prev, ...parts])
+              overlayAdd(parts)
               panelStore.bumpUnread()
             }
           } else if (data.type === 'reply') {
@@ -490,11 +543,12 @@ window.__ModuleLoader__.load({
             }))
             if (data.degraded && parts.length === 0 && !data.superseded && !data.waiting_for_decision) {
               stickNotice(failureNotice(), nowIso)
-              parts.push(stuckNoticeRef.current)
+              setMsgs(renderMerged(baseRef.current))
             } else if (data.degraded === false && parts.length === 0) {
-              parts.push({ role: 'assistant', content: '（没有回复）', inner_thought: '', ts: nowIso })
+              overlayAdd([{ role: 'assistant', content: '（没有回复）', inner_thought: '', ts: nowIso }])
+            } else if (parts.length > 0) {
+              overlayAdd(parts)
             }
-            if (parts.length > 0) setMsgs((prev) => [...prev, ...parts])
           } else if (data.type === 'dialogue_updated') {
             // 对话更新广播——先同步再读本地，显示最新消息与回复
             refreshFromLocal()
@@ -509,7 +563,7 @@ window.__ModuleLoader__.load({
               ? '消息额度已用完，' + hm + ' 后恢复'
               : '⚠️ ' + (data.error || '处理失败')
             stickNotice('⚠️ ' + text, nowIso)
-            setMsgs((prev) => [...prev, stuckNoticeRef.current])
+            setMsgs(renderMerged(baseRef.current))
           }
         })
         return off
@@ -541,9 +595,13 @@ window.__ModuleLoader__.load({
       const syncChainRef = React.useRef(Promise.resolve())
       const triggerSync = React.useCallback(() => {
         const run = syncChainRef.current.then(() => apiPost('/api/muche/sync', {}).then(
-          (res) => ((res && res.ok)
-            ? { ok: true, error: '' }
-            : { ok: false, error: String((res && res.error) || '未知错误') }),
+          (res) => {
+            if (res && res.ok) {
+              syncSeqRef.current += 1
+              return { ok: true, error: '' }
+            }
+            return { ok: false, error: String((res && res.error) || '未知错误') }
+          },
           () => ({ ok: false, error: '请求失败' }),
         ))
         // 断链保护：本次失败不影响后续排队。
@@ -556,21 +614,16 @@ window.__ModuleLoader__.load({
         const n = Math.max(1, Math.min(200, Number(limit) || 20))
         return apiGet('/api/muche/local-history?limit=' + n).then((res) => {
           if (res && res.ok) {
-            // 钉住的报错不受刷新影响，一直显示到发新消息。
+            // 确认态进 base，在途 overlay 合并渲染（认领退役，不整页吞在途）。
             // 本地 reset_mark 行按系统提醒渲染（normalize 保留 kind）。
+            // 真空即寂静：空页不写任何说明，与身份失败的错误码区分开。
             const page = normalize(res.messages)
-            setMsgs(withSticky(page))
+            baseRef.current = page
+            reconcileOverlay()
+            setMsgs(renderMerged(page))
             setHasMore(!!res.has_more)
             setNextBefore(res.next_before || null)
             setError('')
-            // 真空态：本地行为空即"抽屉是空的"，写清抽屉号（meta.userHash6），
-            // 与身份失败的错误码区分开。
-            if (page.length === 0) {
-              const hash6 = res.meta && typeof res.meta.userHash6 === 'string' ? res.meta.userHash6 : ''
-              setEmptyNote('本机暂无聊天记录' + (hash6 ? '（抽屉' + hash6 + '为空）' : ''))
-            } else {
-              setEmptyNote('')
-            }
             return true
           }
           if (res && !res.ok && res.error) {
@@ -635,17 +688,34 @@ window.__ModuleLoader__.load({
       }, [msgs])
 
       const loadOlder = () => {
-        // OI-070 本地口径：本地无 before 游标，翻页即 limit 翻倍重读
-        // （本地文件全量在机，200 上限内一次到位，无第二套游标）。
-        // OI-078 读>同步：先本地放大读（即时翻页），再后台同步追认；
-        // OI-074：同步失败保留现状（只钉一句，不替换）。
-        if (loadingOlder || !hasMore) return
+        // 本地有更多即 limit 放大重读；本地到头且未探底时调回填口向旧取
+        // 一页（前插全序合并）。先本地后同步，同步失败保留现状只钉一句。
+        if (loadingOlder || (!hasMore && reachedStart)) return
         setLoadingOlder(true)
         const el = listRef.current
         const prevHeight = el ? el.scrollHeight : 0
         const prevScrollTop = el ? el.scrollTop : 0
-        const nextLimit = Math.min(200, msgs.length + 20)
         preserveRef.current = { prevHeight, prevScrollTop }
+        if (!hasMore) {
+          apiPost('/api/muche/sync-older', {}).then((res) => {
+            if (res && res.ok) {
+              syncSeqRef.current += 1
+              if (res.exhausted && !res.added) setReachedStart(true)
+              loadHistory(baseRef.current.length + 20).then(() => {
+                setLoadingOlder(false)
+                preserveRef.current = { prevHeight, prevScrollTop }
+              })
+            } else {
+              setLoadingOlder(false)
+              setError('同步失败，显示的是本机存档' + (res && res.error ? '（' + String(res.error).slice(0, 80) + '）' : ''))
+            }
+          }, () => {
+            setLoadingOlder(false)
+            setError('同步失败，显示的是本机存档（请求失败）')
+          })
+          return
+        }
+        const nextLimit = Math.min(200, baseRef.current.length + 20)
         loadHistory(nextLimit).then((ok) => {
           if (!ok) { setLoadingOlder(false); return }
           triggerSync().then((sync) => {
@@ -672,7 +742,7 @@ window.__ModuleLoader__.load({
         // 发新消息即清掉钉住的报错（报错只留到下一次发送）。
         stuckNoticeRef.current = null
         const nowIso = typeof Date !== 'undefined' ? new Date().toISOString() : ''
-        setMsgs((prev) => [...prev, { role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images }])
+        overlayAdd([{ role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images }])
         // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
         setThinking(true)
         // WS 优先(聊天走 WS 契约);未就绪时 HTTP 降级(同达后端 chat_core)
@@ -685,7 +755,7 @@ window.__ModuleLoader__.load({
               if (inflightRef.current.has(mid)) {
                 settleInflight(mid)
                 stickNotice('⚠️ 回复超时,请重试', nowIso)
-                setMsgs((prev) => [...prev, stuckNoticeRef.current])
+                setMsgs(renderMerged(baseRef.current))
               }
             }, 90000))
             if (inputRef.current && typeof inputRef.current.focus === 'function') inputRef.current.focus()
@@ -756,13 +826,14 @@ window.__ModuleLoader__.load({
       const rows = []
       for (let i = 0; i < msgs.length; i++) {
         const m = msgs[i]
+        const key = (m && (m.overlayKey || m.id)) || i
         let showTime = false
         if (i === 0) showTime = true
         else {
           const gap = gapMinutes(msgs[i - 1].ts, m.ts)
           if (gap === null || gap > 2) showTime = true
         }
-        rows.push(bubble(m, i, showTime))
+        rows.push(bubble(m, key, showTime))
       }
 
       if (!open) return null
@@ -827,7 +898,7 @@ window.__ModuleLoader__.load({
           }, '×'),
         ),
         h('div', { ref: listRef, onScroll: onListScroll, style: { flex: 1, overflowY: 'auto', padding: 12 } },
-          hasMore ? h('div', { style: { textAlign: 'center', marginBottom: 8 } },
+          (hasMore || !reachedStart) ? h('div', { style: { textAlign: 'center', marginBottom: 8 } },
             h('button', {
               type: 'button', onClick: loadOlder, disabled: loadingOlder,
               style: { cursor: 'pointer', background: 'none', border: 'none', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
@@ -835,7 +906,6 @@ window.__ModuleLoader__.load({
           ) : null,
           error ? h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-state-error-primary)' } }, '⚠️ ' + error) : null,
           loading ? h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-tertiary)' } }, '加载中…') : null,
-          (msgs.length === 0 && !loading && !error && emptyNote) ? h('div', { style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', margin: '18px 0' } }, emptyNote) : null,
           rows,
           h('div', { ref: bottomRef, style: { height: 1 } }),
         ),
