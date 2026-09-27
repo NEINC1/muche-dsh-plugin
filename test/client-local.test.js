@@ -63,6 +63,12 @@ test('翻页 300ms 尾防抖', () => {
   assert.ok(/300/.test(older[0]), '防抖不是 300ms')
 })
 
+test('翻页无游标即探底（不重拉最新页）', () => {
+  const older = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
+  assert.ok(older, '未找到 loadOlder')
+  assert.ok(/!cursor/.test(older[0]), '无游标未探底，会重拉最新页空转')
+})
+
 test('合并渲染：base＋overlay，无整页吞在途', () => {
   assert.ok(/baseRef\.current = page/.test(BUNDLE), '首屏未把确认行写入 base')
   assert.ok(/overlayRef/.test(BUNDLE), '缺少在途覆盖层 overlay')

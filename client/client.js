@@ -738,6 +738,13 @@ window.__ModuleLoader__.load({
         const prevScrollTop = el ? el.scrollTop : 0
         preserveRef.current = { prevHeight, prevScrollTop }
         const cursor = olderCursor
+        if (!cursor) {
+          // 有更多却无游标（服务端契约外）：不再发请求，直接探底。
+          setReachedStart(true)
+          setLoadingOlder(false)
+          preserveRef.current = { prevHeight, prevScrollTop }
+          return
+        }
         apiGet('/api/muche/history?limit=50' + (cursor ? '&before=' + encodeURIComponent(cursor) : '')).then((res) => {
           if (res && res.ok) {
             const rows = normalize(res.messages)
