@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.5.1），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.5.2），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -31,7 +31,7 @@ dsh plugin add muche-dsh-plugin
 1. 打开 dsh 设置 → 小沐，填后端地址和 API key（小沐后台生成），保存。
 2. 点左下角「小沐」开聊。反向桥接配好 key 即在线，无需额外操作。
 
-后端地址口径：远端用户填 `<公网基址>/api`（公网入口只把 `/api` 反代到后端，少写前缀会打到 SPA 首页）；与后端同机时填 `http://127.0.0.1:8000`。
+后端地址口径（全员远端唯一口径）：填 `<公网基址>/api`（公网入口只把 `/api` 反代到后端，少写前缀会打到 SPA 首页，面板报"后端地址可能少了 /api 后缀"）；不再提供同机直连分支。
 
 ## 卸载
 

@@ -99,3 +99,13 @@ test('换 key/地址清内存防串号', () => {
   assert.ok(/authFpRef/.test(BUNDLE), '缺少配置指纹，换 key 不清内存会串号')
   assert.ok(/overlayRef\.current = \[\]/.test(BUNDLE), '配置变化未清覆盖层')
 })
+
+test('地址缺 /api 即时提示（全员远端唯一口径）', () => {
+  assert.ok(/missingApiSuffix/.test(BUNDLE), '缺少地址形态即时判定')
+  assert.ok(/地址少了 \/api 后缀/.test(BUNDLE), '缺少缺后缀 inline 红字')
+  assert.ok(!/同机填/.test(BUNDLE), '仍保留同机分支文案（全员远端已废止）')
+})
+
+test('面板错误透传 NOT_API 指引（不吞成无差别报错）', () => {
+  assert.ok(/少了 \/api 后缀/.test(BUNDLE), '面板未透传 NOT_API 可操作指引')
+})

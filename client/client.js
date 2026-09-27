@@ -1009,6 +1009,20 @@ window.__ModuleLoader__.load({
     }
 
     // ── 设置页（官方配置镜像读写，不走自建路由） ──
+    // 地址形态即时提示（全员远端唯一口径）：公网地址缺 /api 后缀即红字，
+    // 本机直连（localhost/127.x，回环打后端根合法）不提示。
+    function missingApiSuffix(url) {
+      const raw = String(url || '').trim()
+      if (!raw) return false
+      try {
+        const u = new URL(raw)
+        const host = String(u.hostname || '').toLowerCase()
+        if (host === 'localhost' || host === '::1' || host === '[::1]') return false
+        if (/^127\./.test(host)) return false
+        const p = String(u.pathname || '').replace(/\/+$/, '')
+        return p === ''
+      } catch (e) { return false }
+    }
     function MucheSettingsSection() {
       const [backendUrl, setBackendUrl] = React.useState('')
       const [apiKey, setApiKey] = React.useState('')
@@ -1069,6 +1083,9 @@ window.__ModuleLoader__.load({
       const test = () => {
         setTesting(true)
         setStatus('')
+        if (missingApiSuffix(backendUrl)) {
+          setStatus('地址可能少了 /api 后缀：远端请填 https://公网地址/api（仍为你测试连接）')
+        }
         apiPost('/api/muche/test', { backendUrl: backendUrl.trim(), apiKey: apiKey.trim() }).then((res) => {
           setTesting(false)
           if (res && res.ok) setStatus('✓ 连接成功:user_id=' + res.userId)
@@ -1083,11 +1100,16 @@ window.__ModuleLoader__.load({
         h('div', { style: { fontSize: 14, fontWeight: 600, marginBottom: 4 } }, '小沐接入配置'),
         h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 16 } },
           '填后端地址和 API key（小沐后台生成），保存即用。'),
-        row('小沐后端地址', h('input', {
-          className: 'muche-field', value: backendUrl,
-          placeholder: '远端填 https://公网地址/api，同机填 http://127.0.0.1:8000（空＝未配置）',
-          onChange: (e) => { dirtyRef.current = true; setBackendUrl(e.target.value) },
-        })),
+        row('小沐后端地址', h('div', null,
+          h('input', {
+            className: 'muche-field', value: backendUrl,
+            placeholder: '填 https://公网地址/api（/api 后缀必填）',
+            onChange: (e) => { dirtyRef.current = true; setBackendUrl(e.target.value) },
+          }),
+          missingApiSuffix(backendUrl) ? h('div', {
+            style: { fontSize: 12, marginTop: 6, color: 'var(--dsw-alias-state-error-primary)' },
+          }, '地址少了 /api 后缀：远端请填 https://公网地址/api，否则只会收到网页、报响应解析失败') : null,
+        )),
         row('API key', h('div', { style: { position: 'relative' } },
           h('input', {
             className: 'muche-field', value: apiKey,
