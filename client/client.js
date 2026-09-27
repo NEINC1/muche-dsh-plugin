@@ -383,6 +383,10 @@ window.__ModuleLoader__.load({
       const panelRef = React.useRef(null)
       const dragRef = React.useRef(null)
       const preserveRef = React.useRef(null)
+      // 底部跟随：开局/新消息默认钉底；用户手动上划即松开（不再抢滚），
+      // 滑回底部自动恢复跟随。翻页（preserve）期间以位置保持优先。
+      const bottomRef = React.useRef(null)
+      const stickRef = React.useRef(true)
       // 在途登记：同一用户可有多条消息等回复，各按 message_id 独立清账。
       const inflightRef = React.useRef(new Set())
       const timersRef = React.useRef(new Map())
@@ -532,11 +536,15 @@ window.__ModuleLoader__.load({
       // 与文件内容一致，替换不丢话。同步失败则保留内存现状，下次再收敛。
       // 服务端 history 只作同步源，不直接显示。
       // 同步串行排队：多次广播重叠时按序执行，防并发写本地竞态。
+      // 观测缺口收口：同步结果带原文 { ok, error }，调用方展示原因——
+      // 转成 true/false 会把后端/Host 的真正错误吞掉，全网无处可查。
       const syncChainRef = React.useRef(Promise.resolve())
       const triggerSync = React.useCallback(() => {
         const run = syncChainRef.current.then(() => apiPost('/api/muche/sync', {}).then(
-          (res) => !!(res && res.ok),
-          () => false,
+          (res) => ((res && res.ok)
+            ? { ok: true, error: '' }
+            : { ok: false, error: String((res && res.error) || '未知错误') }),
+          () => ({ ok: false, error: '请求失败' }),
         ))
         // 断链保护：本次失败不影响后续排队。
         syncChainRef.current = run.then(() => undefined, () => undefined)
@@ -574,12 +582,13 @@ window.__ModuleLoader__.load({
       }, [])
       // 刷新 = 先本地后同步（OI-074 交错语义不动：同步失败保留内存现状，
       // 只钉一句"显示的是本机存档"；身份失败时连同步都不发，指引不被覆盖）。
+      // 钉句后附同步原文（截断 80 字防刷屏），下次确诊不用再借 F12。
       const refreshFromLocal = React.useCallback(() => {
         return loadHistory().then((ok) => {
           if (!ok) return false
-          return triggerSync().then((syncOk) => {
-            if (syncOk) return loadHistory()
-            setError('同步失败，显示的是本机存档')
+          return triggerSync().then((sync) => {
+            if (sync.ok) return loadHistory()
+            setError('同步失败，显示的是本机存档' + (sync.error ? '（' + sync.error.slice(0, 80) + '）' : ''))
             return false
           })
         })
@@ -587,9 +596,32 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (!open) return
         setLoading(true)
+        // 开局即跟随：不管上次停在哪，打开钉最新（用户免手划）。
+        stickRef.current = true
         refreshFromLocal().then(() => setLoading(false))
       }, [open])
 
+      // 钉底（OI-078 开局即最新）：像素滚动在动画/图片后载时必漂移，
+      // 改用末尾哨兵 scrollIntoView＋rAF（等一帧布局落定）；图片 onLoad 后
+      // 若仍在跟随再钉一次。用户手动上划即松跟随（onScroll 反馈）。
+      const pinToBottom = () => {
+        const anchor = bottomRef.current
+        if (!anchor) return
+        const go = () => {
+          try { anchor.scrollIntoView({ block: 'end' }) } catch (e) { /* 忽略 */ }
+        }
+        if (typeof requestAnimationFrame !== 'undefined') requestAnimationFrame(() => requestAnimationFrame(go))
+        else go()
+      }
+      const onListScroll = () => {
+        const el = listRef.current
+        if (!el) return
+        // 距底 40px 内算"在底部"：容差防缩放/舍入抖动。
+        stickRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 40
+      }
+      const onHistoryImageLoad = () => {
+        if (stickRef.current) pinToBottom()
+      }
       React.useEffect(() => {
         const el = listRef.current
         if (!el) return
@@ -597,8 +629,8 @@ window.__ModuleLoader__.load({
           const p = preserveRef.current
           preserveRef.current = null
           el.scrollTop = el.scrollHeight - p.prevHeight + p.prevScrollTop
-        } else {
-          el.scrollTop = el.scrollHeight
+        } else if (stickRef.current) {
+          pinToBottom()
         }
       }, [msgs])
 
@@ -616,10 +648,10 @@ window.__ModuleLoader__.load({
         preserveRef.current = { prevHeight, prevScrollTop }
         loadHistory(nextLimit).then((ok) => {
           if (!ok) { setLoadingOlder(false); return }
-          triggerSync().then((syncOk) => {
-            if (!syncOk) {
+          triggerSync().then((sync) => {
+            if (!sync.ok) {
               setLoadingOlder(false)
-              setError('同步失败，显示的是本机存档')
+              setError('同步失败，显示的是本机存档' + (sync.error ? '（' + sync.error.slice(0, 80) + '）' : ''))
               return
             }
             loadHistory(nextLimit).then(() => {
@@ -703,6 +735,7 @@ window.__ModuleLoader__.load({
               imgUrls.length && mine ? h('div', { style: { marginBottom: m.content ? 6 : 0 } },
                 imgUrls.map((src, k) => h('img', {
                   key: 'img' + k, src,
+                  onLoad: onHistoryImageLoad,
                   style: { width: '100%', borderRadius: 8, display: 'block', marginBottom: k + 1 < imgUrls.length ? 6 : 0 },
                 })),
               ) : null,
@@ -793,7 +826,7 @@ window.__ModuleLoader__.load({
             style: { marginLeft: 'auto', cursor: 'pointer', background: 'none', border: 'none', color: 'var(--dsw-alias-label-secondary)', fontSize: 16, padding: '2px 6px' },
           }, '×'),
         ),
-        h('div', { ref: listRef, style: { flex: 1, overflowY: 'auto', padding: 12 } },
+        h('div', { ref: listRef, onScroll: onListScroll, style: { flex: 1, overflowY: 'auto', padding: 12 } },
           hasMore ? h('div', { style: { textAlign: 'center', marginBottom: 8 } },
             h('button', {
               type: 'button', onClick: loadOlder, disabled: loadingOlder,
@@ -804,6 +837,7 @@ window.__ModuleLoader__.load({
           loading ? h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-tertiary)' } }, '加载中…') : null,
           (msgs.length === 0 && !loading && !error && emptyNote) ? h('div', { style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', margin: '18px 0' } }, emptyNote) : null,
           rows,
+          h('div', { ref: bottomRef, style: { height: 1 } }),
         ),
         quotaUntil > Date.now() ? h('div', { style: { padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } },
           '消息额度已用完，' + (localHM(new Date(quotaUntil).toISOString()) || '稍后') + ' 后恢复') : null,

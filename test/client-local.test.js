@@ -64,3 +64,16 @@ test('OI-074 翻页同样等同步成功后再替换', () => {
   assert.ok(older, '未找到 loadOlder')
   assert.ok(/triggerSync\(\)\.then/.test(older[0]), '翻页未等同步完成就替换，同样会吞在途行')
 })
+
+// 观测缺口收口：同步失败必须带原文展示（转 true/false 会吞掉后端/Host 真错）。
+test('同步失败透传原文（不吞错）', () => {
+  const trigger = BUNDLE.match(/const triggerSync = [\s\S]*?\}, \[\]\)/)
+  assert.ok(trigger, '未找到 triggerSync')
+  assert.ok(!/=> *!!\(res && res\.ok\)/.test(trigger[0]), 'triggerSync 仍转布尔值吞错')
+  assert.ok(/res\.error/.test(trigger[0]), 'triggerSync 未透传后端错误原文')
+  assert.ok(/请求失败/.test(trigger[0]), '网络异常无兜底文案')
+  const refresh = BUNDLE.match(/const refreshFromLocal = [\s\S]*?\}, \[triggerSync, loadHistory\]\)/)
+  assert.ok(/sync\.error/.test(refresh[0]), '刷新钉句未附同步原文')
+  const older = BUNDLE.match(/const loadOlder = \(\) => \{[\s\S]*?\n      \}/)
+  assert.ok(/sync\.error/.test(older[0]), '翻页钉句未附同步原文')
+})

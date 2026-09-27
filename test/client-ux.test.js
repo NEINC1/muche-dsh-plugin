@@ -74,3 +74,28 @@ test('焦点 effect 注册在早退之前（hooks 顺序不被早退截断）', 
   const focusEffect = BUNDLE.indexOf('inputRef.current')
   assert.ok(focusEffect > 0 && focusEffect < earlyReturn, '焦点补回逻辑须在早退之前注册')
 })
+
+test('开局钉底（打开即最新，免手划）', () => {
+  // 开门 effect 必须恢复跟随（不管上次停在哪）。
+  assert.ok(/stickRef\.current = true/.test(BUNDLE), '打开未恢复底部跟随')
+  // 列表末尾有哨兵锚点，钉底走 scrollIntoView（像素滚动在动画/图片后载必漂）。
+  assert.ok(/ref: bottomRef/.test(BUNDLE), '缺少末尾哨兵锚点 bottomRef')
+  assert.ok(/scrollIntoView\(\{ *block: *'end' *\}\)/.test(BUNDLE), '钉底未用哨兵 scrollIntoView')
+  assert.ok(/requestAnimationFrame/.test(BUNDLE), '钉底未等布局落定（rAF）')
+})
+
+test('手动上划松跟随、滑回底部自恢复（不抢滚）', () => {
+  assert.ok(/onScroll: onListScroll/.test(BUNDLE), '列表未监听滚动')
+  assert.ok(/stickRef\.current = \(el\.scrollHeight - el\.scrollTop - el\.clientHeight\) < 40/.test(BUNDLE), '跟随判定缺底部容差')
+})
+
+test('图片后载重钉（跟随中才钉，不抢读）', () => {
+  assert.ok(/onLoad: onHistoryImageLoad/.test(BUNDLE), '历史图片未挂载后重钉')
+  assert.ok(/if \(stickRef\.current\) pinToBottom\(\)/.test(BUNDLE), '图片重钉未以前跟随为条件')
+})
+
+test('翻页保持位置（preserve 优先于钉底）', () => {
+  const fx = BUNDLE.match(/\}, \[msgs\]\)/)
+  assert.ok(fx, '未找到 msgs 滚动 effect')
+  assert.ok(/preserveRef\.current/.test(BUNDLE), '缺少翻页位置保持')
+})

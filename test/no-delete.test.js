@@ -33,7 +33,9 @@ test('lib 无文件删除原语（anonymous 精确清理除外）', () => {
     lines.forEach((line, i) => {
       // 裸 rm(/unlink(/rmdir(（字母前缀的 firm(/alarm( 类单词除外）即删文件语义。
       if (/(^|[^A-Za-z_$])((?:unlink|rmdir|rm)\s*\()/.test(line)) {
-        offenders.push(`${file.split('/').pop()}:${i + 1}: ${line.trim().slice(0, 80)}`)
+        // Windows 下 file 含反斜杠，split 必须同时认两种分隔符，否则
+        // basename 取不到、local-identity.js 例外匹配恒失败（本机实测）。
+        offenders.push(`${file.split(/[/\\]/).pop()}:${i + 1}: ${line.trim().slice(0, 80)}`)
       }
     })
   }
