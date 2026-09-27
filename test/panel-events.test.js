@@ -200,27 +200,14 @@ test('路由：无 key 401；有 key 下发 SSE 头＋hello 首行', async () =>
   }
 })
 
-test('dispose 只断 SSE，不断本地存档', async () => {
-  const { mkdtemp, writeFile } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const { default: path } = await import('node:path')
-  const { writeLocalState, readLocalRows } = await import('../lib/local-store.js')
+test('dispose 只断 SSE（插件本机零落盘，hub 订阅者清零）', async () => {
   const { createPanelEventsHub } = await import('../lib/panel-events.js')
-  const dir = await mkdtemp(path.join(tmpdir(), 'muche-dispose-'))
-  try {
-    await writeFile(path.join(dir, 'messages.jsonl'), '{"id":"keep"}\n')
-    await writeLocalState(dir, { before: '', generation: 7 })
-    const res = { write() {}, on() {}, end() {} }
-    const hub2 = createPanelEventsHub({
-      createUpstream: () => ({ start() {}, dispose() {} }),
-    })
-    hub2.subscribe(res, { backendUrl: 'http://x', apiKey: 'k' })
-    hub2.dispose()
-    const rows = await readLocalRows(dir)
-    assert.ok(rows.some((r) => r.id === 'keep'), 'dispose 后本地行必须原样保留')
-    assert.equal(hub2.subscriberCount, 0)
-  } finally {
-    const { rm } = await import('node:fs/promises')
-    await rm(dir, { recursive: true, force: true })
-  }
+  const res = { write() {}, on() {}, end() {} }
+  const hub2 = createPanelEventsHub({
+    createUpstream: () => ({ start() {}, dispose() {} }),
+  })
+  hub2.subscribe(res, { backendUrl: 'http://x', apiKey: 'k' })
+  assert.equal(hub2.subscriberCount, 1)
+  hub2.dispose()
+  assert.equal(hub2.subscriberCount, 0)
 })

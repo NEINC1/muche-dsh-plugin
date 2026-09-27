@@ -364,7 +364,7 @@ window.__ModuleLoader__.load({
       const wsOpen = useWsOpen()
       const [msgs, setMsgs] = React.useState([])
       const [hasMore, setHasMore] = React.useState(false)
-      const [nextBefore, setNextBefore] = React.useState(null)
+      const [olderCursor, setOlderCursor] = React.useState(null)
       const [loadingOlder, setLoadingOlder] = React.useState(false)
       const [input, setInput] = React.useState('')
       // 在途回复只是一个提示状态：输入框永不为它禁用，连续追发由后端合并语义承接。
@@ -389,6 +389,13 @@ window.__ModuleLoader__.load({
       // 在途登记：同一用户可有多条消息等回复，各按 message_id 独立清账。
       const inflightRef = React.useRef(new Set())
       const timersRef = React.useRef(new Map())
+      // 过期图：服务端 3 天删原图后 /image 404，加载失败即记，改显占位。
+      const failedImgsRef = React.useRef(new Set())
+      const markImgFailed = (src) => {
+        if (!src || failedImgsRef.current.has(src)) return
+        failedImgsRef.current.add(src)
+        setMsgs(renderMerged(baseRef.current))
+      }
       const stuckNoticeRef = React.useRef(null) // 报错钉住：历史刷新不刷掉，发新消息才清
       const quotaUntilRef = React.useRef(0)
       const setQuota = (ms) => { quotaUntilRef.current = ms; setQuotaUntil(ms) }
@@ -398,15 +405,18 @@ window.__ModuleLoader__.load({
       const stickNotice = (content, ts) => {
         stuckNoticeRef.current = { role: 'assistant', content, inner_thought: '', ts }
       }
-      // 显示合并（确认态＋在途覆盖层）：base 是本地文件确认行，overlay 是
-      // 未确认行（乐观用户行/待收账 reply/主动行）。合并渲染，整页替换不再
-      // 吞在途；overlay 被 base 认领（同角色同内容）或超时退役。
+      // 显示合并（服务端确认态＋在途覆盖层）：base 是服务端页缓存，
+      // overlay 是未确认行（乐观用户行/待收账 reply/主动行）。合并渲染，
+      // 整页替换不再吞在途；overlay 被 base 认领（ingress 精确优先，
+      // 同角色同内容次之）或超时退役。
       const baseRef = React.useRef([])
       const overlayRef = React.useRef([])
       const overlaySeqRef = React.useRef(0)
       const syncSeqRef = React.useRef(0)
       const overlayCovered = (o, base) => {
         if (!o || typeof o !== 'object' || o.role === 'system') return false
+        // 精确认领：用户乐观行带客户端 message_id，服务端 ingress 对上即退役。
+        if (o.mid && base.some((b) => b.delivery_id && b.delivery_id === o.mid)) return true
         const content = typeof o.content === 'string' ? o.content : ''
         if (content && base.some((b) => b.role === o.role && b.content === content)) return true
         if (!content) {
@@ -482,7 +492,8 @@ window.__ModuleLoader__.load({
         id: m.id || '',
         medium: m.medium || 'text',
         image_count: Number(m.image_count) || 0,
-        kind: m.kind || '',
+        delivery_id: typeof m.delivery_id === 'string' ? m.delivery_id : (typeof m.ingress_id === 'string' ? m.ingress_id : ''),
+        vision: typeof m.vision_descriptions === 'string' ? m.vision_descriptions : '',
       }))
 
       // 附图选择:最多 3 张、单张 8M、仅四格式由后端强校验；前端先拦 obvious 的。
@@ -550,8 +561,8 @@ window.__ModuleLoader__.load({
               overlayAdd(parts)
             }
           } else if (data.type === 'dialogue_updated') {
-            // 对话更新广播——先同步再读本地，显示最新消息与回复
-            refreshFromLocal()
+            // 对话更新广播——增量 20 条归一，显示最新消息与回复
+            refreshNew()
           } else if (data.type === 'error' && data.message_id && inflightRef.current.has(data.message_id)) {
             settleInflight(data.message_id)
             if (data.code === 'message_quota_exhausted') {
@@ -585,74 +596,101 @@ window.__ModuleLoader__.load({
       }, [open, quotaUntil])
 
       // 拉取最新历史：打开面板 / dialogue_updated 广播触发。
-      // OI-074 单真源串行：整页替换只发生在确认同步成功之后——同步完成
-      // 再读本地，读到的是同步后的新鲜文件；在途行（乐观用户行/reply 行）
-      // 与文件内容一致，替换不丢话。同步失败则保留内存现状，下次再收敛。
-      // 服务端 history 只作同步源，不直接显示。
-      // 同步串行排队：多次广播重叠时按序执行，防并发写本地竞态。
-      // 观测缺口收口：同步结果带原文 { ok, error }，调用方展示原因——
-      // 转成 true/false 会把后端/Host 的真正错误吞掉，全网无处可查。
-      const syncChainRef = React.useRef(Promise.resolve())
-      const triggerSync = React.useCallback(() => {
-        const run = syncChainRef.current.then(() => apiPost('/api/muche/sync', {}).then(
-          (res) => {
-            if (res && res.ok) {
-              syncSeqRef.current += 1
-              return { ok: true, error: '' }
-            }
-            return { ok: false, error: String((res && res.error) || '未知错误') }
-          },
-          () => ({ ok: false, error: '请求失败' }),
-        ))
-        // 断链保护：本次失败不影响后续排队。
-        syncChainRef.current = run.then(() => undefined, () => undefined)
-        return run
+      // 服务端直读：首屏单页 50 条，绝不全量；增量 20 条小批量按 id 归一；
+      // 上翻游标前插，has_more=false 即停；dialogue_updated 到才拉，不轮询。
+      const fetchNew = React.useCallback(() => {
+        return apiGet('/api/muche/history?limit=20').then(
+          (res) => ((res && res.ok)
+            ? { ok: true, error: '', messages: res.messages || [] }
+            : { ok: false, error: String((res && res.error) || '未知错误'), messages: [] }),
+          () => ({ ok: false, error: '请求失败', messages: [] }),
+        )
       }, [])
-      // 先读本地渲染（OI-078 读>同步）：开门/重开先给本地内容，同步只做
-      // 后台追认。返回是否读到（身份失败即 false，调用方跳过同步不覆盖指引）。
-      const loadHistory = React.useCallback((limit) => {
-        const n = Math.max(1, Math.min(200, Number(limit) || 20))
-        return apiGet('/api/muche/local-history?limit=' + n).then((res) => {
+      // 首屏：单页 50 条进 base，在途 overlay 合并渲染（认领退役）。
+      // 真空即寂静：空页不写任何说明，与身份失败的错误码区分开。
+      const loadHistory = React.useCallback(() => {
+        return apiGet('/api/muche/history?limit=50').then((res) => {
           if (res && res.ok) {
-            // 确认态进 base，在途 overlay 合并渲染（认领退役，不整页吞在途）。
-            // 本地 reset_mark 行按系统提醒渲染（normalize 保留 kind）。
-            // 真空即寂静：空页不写任何说明，与身份失败的错误码区分开。
             const page = normalize(res.messages)
             baseRef.current = page
             reconcileOverlay()
             setMsgs(renderMerged(page))
             setHasMore(!!res.has_more)
-            setNextBefore(res.next_before || null)
+            setOlderCursor(typeof res.next_before === 'string' && res.next_before ? res.next_before : null)
+            if (!res.has_more) setReachedStart(true)
             setError('')
+            syncSeqRef.current += 1
             return true
           }
           if (res && !res.ok && res.error) {
-            // 身份失败（NEED_KEY/NEED_SETUP/AUTH_FAILED）：只显指引，不读档。
+            // 身份失败（NEED_KEY/NEED_SETUP/AUTH_FAILED）：只显指引。
             setError(res.error)
           }
           return false
         }).catch(() => false)
       }, [])
-      // 刷新 = 先本地后同步（OI-074 交错语义不动：同步失败保留内存现状，
-      // 只钉一句"显示的是本机存档"；身份失败时连同步都不发，指引不被覆盖）。
-      // 钉句后附同步原文（截断 80 字防刷屏），下次确诊不用再借 F12。
-      const refreshFromLocal = React.useCallback(() => {
-        return loadHistory().then((ok) => {
-          if (!ok) return false
-          return triggerSync().then((sync) => {
-            if (sync.ok) return loadHistory()
-            setError('同步失败，显示的是本机存档' + (sync.error ? '（' + sync.error.slice(0, 80) + '）' : ''))
+      // 增量刷新：20 条小批量与内存 base 按 id 归一（不重拉全页）；
+      // 失败保留内存现状，只钉一句带原文（截断 80 字）。
+      const refreshNew = React.useCallback(() => {
+        return fetchNew().then((delta) => {
+          if (!delta.ok) {
+            setError('刷新失败' + (delta.error ? '（' + delta.error.slice(0, 80) + '）' : ''))
             return false
-          })
+          }
+          const rows = normalize(delta.messages)
+          if (rows.length > 0) {
+            const known = new Set(baseRef.current.map((m) => m.id))
+            const fresh = rows.filter((m) => m.id && !known.has(m.id))
+            if (fresh.length > 0) {
+              const merged = [...baseRef.current, ...fresh]
+              merged.sort((a, b) => {
+                const ta = Date.parse(a.ts)
+                const tb = Date.parse(b.ts)
+                if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0
+                return ta - tb
+              })
+              baseRef.current = merged.slice(-200)
+            }
+            reconcileOverlay()
+            setMsgs(renderMerged(baseRef.current))
+          }
+          syncSeqRef.current += 1
+          return true
         })
-      }, [triggerSync, loadHistory])
+      }, [fetchNew])
       React.useEffect(() => {
         if (!open) return
         setLoading(true)
         // 开局即跟随：不管上次停在哪，打开钉最新（用户免手划）。
         stickRef.current = true
-        refreshFromLocal().then(() => setLoading(false))
+        setReachedStart(false)
+        setOlderCursor(null)
+        loadHistory().then(() => setLoading(false))
       }, [open])
+      // 换 key/换地址即清内存重拉（桌面版"退出整清"，防串号）。
+      const authFpRef = React.useRef('')
+      React.useEffect(() => scopeStore.subscribe(() => {
+        let fp = ''
+        try {
+          const snap = scopeStore.scope && scopeStore.scope.getSnapshot()
+          const v = (snap && snap.value) || {}
+          fp = (v.backendUrl || '') + '|' + (v.apiKey || '')
+        } catch (e) { return }
+        if (authFpRef.current && fp !== authFpRef.current) {
+          authFpRef.current = fp
+          baseRef.current = []
+          overlayRef.current = []
+          stuckNoticeRef.current = null
+          setMsgs([])
+          setHasMore(false)
+          setReachedStart(false)
+          setOlderCursor(null)
+          setError('')
+          if (panelStore.open) loadHistory()
+        } else if (!authFpRef.current) {
+          authFpRef.current = fp
+        }
+      }), [loadHistory])
 
       // 钉底（OI-078 开局即最新）：像素滚动在动画/图片后载时必漂移，
       // 改用末尾哨兵 scrollIntoView＋rAF（等一帧布局落定）；图片 onLoad 后
@@ -687,48 +725,43 @@ window.__ModuleLoader__.load({
         }
       }, [msgs])
 
+      const olderTimerRef = React.useRef(null)
       const loadOlder = () => {
-        // 本地有更多即 limit 放大重读；本地到头且未探底时调回填口向旧取
-        // 一页（前插全序合并）。先本地后同步，同步失败保留现状只钉一句。
+        // 游标前插：用 olderCursor 向旧取一页；has_more=false 即停不再发。
+        // 300ms 尾防抖：快速滚动只打最后一枪。
         if (loadingOlder || (!hasMore && reachedStart)) return
+        if (olderTimerRef.current) return
+        olderTimerRef.current = setTimeout(() => { olderTimerRef.current = null }, 300)
         setLoadingOlder(true)
         const el = listRef.current
         const prevHeight = el ? el.scrollHeight : 0
         const prevScrollTop = el ? el.scrollTop : 0
         preserveRef.current = { prevHeight, prevScrollTop }
-        if (!hasMore) {
-          apiPost('/api/muche/sync-older', {}).then((res) => {
-            if (res && res.ok) {
-              syncSeqRef.current += 1
-              if (res.exhausted && !res.added) setReachedStart(true)
-              loadHistory(baseRef.current.length + 20).then(() => {
-                setLoadingOlder(false)
-                preserveRef.current = { prevHeight, prevScrollTop }
-              })
-            } else {
-              setLoadingOlder(false)
-              setError('同步失败，显示的是本机存档' + (res && res.error ? '（' + String(res.error).slice(0, 80) + '）' : ''))
+        const cursor = olderCursor
+        apiGet('/api/muche/history?limit=50' + (cursor ? '&before=' + encodeURIComponent(cursor) : '')).then((res) => {
+          if (res && res.ok) {
+            const rows = normalize(res.messages)
+            const known = new Set(baseRef.current.map((m) => m.id))
+            const fresh = rows.filter((m) => m.id && !known.has(m.id))
+            if (fresh.length > 0) {
+              const merged = [...fresh, ...baseRef.current]
+              baseRef.current = merged.slice(-200)
+              reconcileOverlay()
+              setMsgs(renderMerged(baseRef.current))
             }
-          }, () => {
+            setHasMore(!!res.has_more)
+            setOlderCursor(typeof res.next_before === 'string' && res.next_before ? res.next_before : null)
+            if (!res.has_more) setReachedStart(true)
+            syncSeqRef.current += 1
             setLoadingOlder(false)
-            setError('同步失败，显示的是本机存档（请求失败）')
-          })
-          return
-        }
-        const nextLimit = Math.min(200, baseRef.current.length + 20)
-        loadHistory(nextLimit).then((ok) => {
-          if (!ok) { setLoadingOlder(false); return }
-          triggerSync().then((sync) => {
-            if (!sync.ok) {
-              setLoadingOlder(false)
-              setError('同步失败，显示的是本机存档' + (sync.error ? '（' + sync.error.slice(0, 80) + '）' : ''))
-              return
-            }
-            loadHistory(nextLimit).then(() => {
-              setLoadingOlder(false)
-              preserveRef.current = { prevHeight, prevScrollTop }
-            })
-          })
+            preserveRef.current = { prevHeight, prevScrollTop }
+          } else {
+            setLoadingOlder(false)
+            setError('加载更早的消息失败' + (res && res.error ? '（' + String(res.error).slice(0, 80) + '）' : ''))
+          }
+        }, () => {
+          setLoadingOlder(false)
+          setError('加载更早的消息失败（请求失败）')
         })
       }
 
@@ -742,11 +775,11 @@ window.__ModuleLoader__.load({
         // 发新消息即清掉钉住的报错（报错只留到下一次发送）。
         stuckNoticeRef.current = null
         const nowIso = typeof Date !== 'undefined' ? new Date().toISOString() : ''
-        overlayAdd([{ role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images }])
-        // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
-        setThinking(true)
         // WS 优先(聊天走 WS 契约);未就绪时 HTTP 降级(同达后端 chat_core)
         const mid = wsStore.newId('m')
+        overlayAdd([{ role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images, mid }])
+        // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
+        setThinking(true)
         inflightRef.current.add(mid)
         if (wsStore.isOpen()) {
           if (wsStore.send({ type: 'user_message', message_id: mid, message: text, images: images.length ? images : undefined })) {
@@ -769,14 +802,6 @@ window.__ModuleLoader__.load({
       }
 
       const bubble = (m, i, showTime) => {
-        // OI-070 重置留痕：本地 reset_mark 行居中系统提醒，不占用户/小沐气泡。
-        if (m.kind === 'reset_mark') {
-          return h('div', { key: i },
-            h('div', {
-              style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '6px 0 10px' },
-            }, m.content || '小沐已被重置'),
-          )
-        }
         const mine = m.role === 'user'
         const previews = Array.isArray(m.previews) ? m.previews : []
         const histCount = !previews.length && mine && m.medium === 'image' && m.image_count > 0 && m.id
@@ -786,6 +811,7 @@ window.__ModuleLoader__.load({
           histUrls.push('/api/muche/image?id=' + encodeURIComponent(m.id) + '&index=' + k)
         }
         const imgUrls = previews.length ? previews : histUrls
+        const expiredVision = typeof m.vision === 'string' ? m.vision : ''
         return h('div', { key: i },
           showTime ? h('div', {
             style: { textAlign: 'center', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', margin: '6px 0 10px' },
@@ -803,11 +829,17 @@ window.__ModuleLoader__.load({
               // 面板不显示内心独白(💭 行移除)。
               // inner_thought 字段与赋值链路保留(数据照常解析入库,恢复显示只需加回渲染)。
               imgUrls.length && mine ? h('div', { style: { marginBottom: m.content ? 6 : 0 } },
-                imgUrls.map((src, k) => h('img', {
-                  key: 'img' + k, src,
-                  onLoad: onHistoryImageLoad,
-                  style: { width: '100%', borderRadius: 8, display: 'block', marginBottom: k + 1 < imgUrls.length ? 6 : 0 },
-                })),
+                imgUrls.map((src, k) => (failedImgsRef.current.has(src)
+                  ? h('div', {
+                    key: 'imgx' + k,
+                    style: { width: '100%', borderRadius: 8, padding: '10px 12px', marginBottom: k + 1 < imgUrls.length ? 6 : 0, fontSize: 13, lineHeight: '18px', background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-secondary)' },
+                  }, '图片已过期' + (expiredVision ? '：' + expiredVision : ''))
+                  : h('img', {
+                    key: 'img' + k, src,
+                    onLoad: onHistoryImageLoad,
+                    onError: () => markImgFailed(src),
+                    style: { width: '100%', borderRadius: 8, display: 'block', marginBottom: k + 1 < imgUrls.length ? 6 : 0 },
+                  }))),
               ) : null,
               m.content ? h('div', {
                 style: {

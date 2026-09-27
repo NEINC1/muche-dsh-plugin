@@ -173,7 +173,7 @@ test('双 apply：第二份不抛、degraded=true、首份路由保留', () => {
   const g1 = createRegistrationGuard()
   assert.equal(registerRoutes(mk(), config, g1), false)
   const before = table.routes.size
-  assert.ok(before >= 7, `首份应注册 chat/image/history/local-history/sync/test/status，共 ${before} 条`)
+  assert.ok(before >= 6, `首份应注册 chat/image/history/test/ws-diag/status，共 ${before} 条`)
   const g2 = createRegistrationGuard()
   assert.equal(registerRoutes(mk(), config, g2), true)
   assert.equal(table.routes.size, before)
@@ -261,7 +261,7 @@ test('卸载清理：live-remove 后路由释放，重装不再撞车', () => {
   assert.equal(registerRoutes(mk(), config), false)
   assert.equal(registerPanelEvents(mk(), config), false)
   const used = table.routes.size
-  assert.ok(used >= 9, `路由（含 events）应注册，实际 ${used} 条`)
+  assert.ok(used >= 7, `路由（含 events）应注册，实际 ${used} 条`)
   // 模拟卸载：纤程 dispose 跑 effect 清理。
   for (const dispose of cleanups.splice(0)) dispose()
   assert.equal(table.routes.size, 0)
