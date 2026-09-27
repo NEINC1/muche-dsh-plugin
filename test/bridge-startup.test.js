@@ -13,7 +13,7 @@
  * 覆盖：
  *  - guard：撞重复吞掉记降级；非撞车原样抛；成功 true；
  *  - 双 apply：第二份不抛、degraded=true、首份路由保留；
- *  - /api/muche/status：返回 fibers 数组形状；
+ *  - /api/muche/health：含 configNs＋桥 fibers 数组形状（旧 /status 已删）；
  *  - 缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖 + refresh 即上线；
  *  - 缺依赖且永不补：有界重试不 hanging（unref），dispose 干净。
  *
@@ -173,7 +173,7 @@ test('双 apply：第二份不抛、degraded=true、首份路由保留', () => {
   const g1 = createRegistrationGuard()
   assert.equal(registerRoutes(mk(), config, g1), false)
   const before = table.routes.size
-  assert.ok(before >= 6, `首份应注册 chat/image/history/test/ws-diag/status，共 ${before} 条`)
+  assert.ok(before >= 4, `首份应注册 chat/image/history/health，共 ${before} 条`)
   const g2 = createRegistrationGuard()
   assert.equal(registerRoutes(mk(), config, g2), true)
   assert.equal(table.routes.size, before)
@@ -186,11 +186,14 @@ test('index 接线：副纤程跳过桥接，主纤程唯一执行', () => {
     '桥接注册应在降级判断之后')
 })
 
-test('/api/muche/status：返回 fibers 数组形状', async () => {
+test('/api/muche/health：含 configNs＋桥 fibers 数组形状（旧 /status 已删）', async () => {
   const { ctx, handlers, config } = routeCtx()
   registerRoutes(ctx, config)
-  const handler = handlers['/api/muche/status']
-  assert.ok(handler, '缺少 /api/muche/status 路由')
+  const handler = handlers['/api/muche/health']
+  assert.ok(handler, '缺少 /api/muche/health 路由')
+  assert.ok(!handlers['/api/muche/status'], '旧 /api/muche/status 未删')
+  assert.ok(!handlers['/api/muche/test'], '旧 /api/muche/test 未删')
+  assert.ok(!handlers['/api/muche/ws-diag'], '旧 /api/muche/ws-diag 未删')
   let code = 0
   let payload = ''
   await handler({ method: 'GET', url: '/' }, {
@@ -200,7 +203,8 @@ test('/api/muche/status：返回 fibers 数组形状', async () => {
   assert.equal(code, 200)
   const body = JSON.parse(payload)
   assert.equal(body.ok, true)
-  assert.ok(Array.isArray(body.status.fibers), 'status.fibers 不是数组')
+  assert.equal(typeof body.configNs, 'string')
+  assert.ok(Array.isArray(body.status.fibers), 'health.status.fibers 不是数组')
 })
 
 test('缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖+refresh 即上线', async () => {
@@ -261,7 +265,7 @@ test('卸载清理：live-remove 后路由释放，重装不再撞车', () => {
   assert.equal(registerRoutes(mk(), config), false)
   assert.equal(registerPanelEvents(mk(), config), false)
   const used = table.routes.size
-  assert.ok(used >= 7, `路由（含 events）应注册，实际 ${used} 条`)
+  assert.ok(used >= 5, `路由（含 events）应注册，实际 ${used} 条`)
   // 模拟卸载：纤程 dispose 跑 effect 清理。
   for (const dispose of cleanups.splice(0)) dispose()
   assert.equal(table.routes.size, 0)

@@ -1,3 +1,6 @@
+allowBuilds:
+  esbuild: true
+
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-brand@0.1.7-rc.2'
   - '@deepseek-ai/dsh-credentials@0.1.7-rc.2'

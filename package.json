@@ -1,6 +1,6 @@
 {
   "name": "muche-dsh-plugin",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务",
   "type": "module",
   "main": "lib/index.js",
@@ -22,7 +22,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-ui-renderer"],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
       "platform": "web"
     }
   },
@@ -34,7 +36,8 @@
     "ws": "^8.21.3"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "build": "esbuild client/src/entry.js --bundle --platform=browser --format=iife --charset=utf8 --outfile=client/client.js --log-level=warning",
+    "test": "npm run build && node --test test/*.test.js"
   },
   "keywords": [
     "dsh",
@@ -51,5 +54,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NEINC1/muche-dsh-plugin.git"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

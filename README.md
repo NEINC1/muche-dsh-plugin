@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.5.3），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`；0.4.10 及更早只认 `0.1.5-rc.2`）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。当前插件版本见 `package.json` 的 `version`（现为 0.6.0），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -31,7 +31,7 @@ dsh plugin add muche-dsh-plugin
 1. 打开 dsh 设置 → 小沐，填后端地址和 API key（小沐后台生成），保存。
 2. 点左下角「小沐」开聊。反向桥接配好 key 即在线，无需额外操作。
 
-后端地址口径（全员远端唯一口径）：填 `<公网基址>/api`（公网入口只把 `/api` 反代到后端，少写前缀会打到 SPA 首页，面板报"后端地址可能少了 /api 后缀"）；不再提供同机直连分支。
+后端地址口径（全员远端唯一口径）：填 `<公网基址>/api`（公网入口只把 `/api` 反代到后端；地址栏缺后缀即时红字，保存时自动补 `/api` 并明示，错路径直接拒存）；不再提供同机直连分支。统一健康口 `GET /api/muche/health` 一次返回鉴权＋历史＋WS 三段结论，设置页“测试连接”可带候选值试连（不保存）。
 
 ## 卸载
 
@@ -54,11 +54,15 @@ dsh plugin remove 'muche-dsh-plugin'
 |---|---|
 | `cordis.patch.yml` | 组合包层：`dsh plugin add` 自动进 profile 层列表，免手写 YAML |
 | `lib/index.js` | Host 入口（inject/apply） |
-| `lib/config.js` | 插件 Config（全 volatile，官方 settings 读写）+ 旧 JSON 配置迁移 |
-| `lib/http.js` | 后端 JSON 请求封装 |
-| `lib/routes.js` | `/api/muche/{chat,history,image,test,ws-diag,status}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘） |
-| `lib/backend_ws.js` | 后端 WS 常驻客户端（桥接通道＋面板 SSE 上游） |
+| `lib/config.js` | 插件 Config（全 volatile，官方 settings 读写） |
+| `lib/backend.js` | 后端地址唯一真源：归一＋拼装＋形态判定 |
+| `lib/errors.js` | 9 码错误分类唯一真源（调用方按码分支，不猜正文） |
+| `lib/http.js` | 后端 JSON 请求封装（归一前置＋UPSTREAM_HTML 分流）＋调用唯一出口 |
+| `lib/routes.js` | `/api/muche/{chat,history,image,health}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID） |
+| `lib/connections.js` | 连接生命周期唯一 Owner（面板上游＋桥接各持一个 ChannelConnection，指纹换连） |
+| `lib/backend_ws.js` | 后端 WS 传输类（桥接通道＋面板 SSE 上游，ping/重连/缓冲） |
 | `lib/dsh-bridge.js` + `lib/dsh-call.js` | 反向桥接：出站收 `dsh_task`，进程内直调 `sessionController` 执行，结果原路回传 |
+| `client/src/` | 面板源码（`pure.js` 纯函数＋`api.js` 同源封装＋`entry.js` 工厂与 UI），esbuild 打包到 `client/client.js`（构建产物随包发布，不手改） |
 
 反向桥接语义（一任务只执行一次）：同 `session_id` 串行、`task_id` 去重、断连在途即失败；会话复用/新建由小沐在工作区别名里决定。`message_id` 幂等（服务端 Redis SET NX 300s）。在途追加走 `steer`（当前轮 step 边界，闲时开新轮）＋`run_id`/`task_id` 在途寻址（含首轮占位，`dsh_session_created` 早期上报）；在途授权/提问以 prepend 拦截经 `dsh_interactive` 上行、`dsh_decide` 按 id 回决，他会话一律透传。
 
@@ -71,8 +75,10 @@ dsh plugin remove 'muche-dsh-plugin'
 ## 开发
 
 ```bash
-cd dsh && pnpm test   # 重启 Desktop 前必跑，全绿才动
+cd dsh && pnpm test   # 先 esbuild 打包 client 再跑全量，重启 Desktop 前必跑，全绿才动
 ```
+
+客户端改 `client/src/` 后禁手改 `client/client.js`（构建产物，`pnpm test` 自动重建）。
 
 ## 许可
 

@@ -18,7 +18,8 @@ import { registerRoutes } from '../lib/routes.js'
 
 const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const BRIDGE_SRC = readFileSync(new URL('../lib/dsh-bridge.js', import.meta.url), 'utf8')
-const CLIENT_SRC = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+const CLIENT_SRC = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8').replace(/"/g, "'")
+// WP4 过渡：产物改走 esbuild 打包，引号归一化。
 
 test('顶层 inject 只留生死线（桥接依赖不在其中）', () => {
   const m = INDEX_SRC.match(/export const inject = \[([^\]]*)\]/)
@@ -60,13 +61,13 @@ test('桥接缺依赖时停用不抛（面板照常）', async () => {
 })
 
 test('首装空 key 时面板开门即见指引', () => {
-  const m = CLIENT_SRC.match(/const loadHistory = React\.useCallback\([^=]*=> \{([\s\S]*?)\n      \}, \[\]\)/)
+  const m = CLIENT_SRC.match(/const loadHistory = React\.useCallback\([^=]*=> \{([\s\S]*?)\n\s*\}, \[\]\)/)
   assert.ok(m, '未找到 loadHistory')
   assert.ok(/!res\.ok/.test(m[1]), 'loadHistory 未处理 !ok 分支——首装空 key 时面板仍静默空白')
   assert.ok(/setError\(res\.error\)/.test(m[1]), 'loadHistory 失败时未把后端指引钉出来')
 })
 
-test('配置走官方服务：自建 config 路由已删，status 暴露 configNs', async () => {
+test('配置走官方服务：自建 config 路由已删，health 暴露 configNs', async () => {
   const handlers = {}
   const config = { backendUrl: 'http://公网/api', apiKey: 'k', workspacePath: '' }
   const ctx = {
@@ -78,12 +79,14 @@ test('配置走官方服务：自建 config 路由已删，status 暴露 configN
   }
   registerRoutes(ctx, config)
   assert.ok(!handlers['/api/muche/config'], '自建 /api/muche/config 未删（配置须走官方服务）')
+  assert.ok(!handlers['/api/muche/status'], '旧 /api/muche/status 未删（configNs 已收口进 health）')
   let body = ''
-  await handlers['/api/muche/status'](
+  await handlers['/api/muche/health'](
     { method: 'GET', url: '/' },
     { writeHead: () => {}, end: (s) => { body = s } },
   )
   const res = JSON.parse(body)
   assert.equal(res.ok, true)
-  assert.equal(res.configNs, 'muche', 'status 未暴露官方配置命名空间')
+  assert.equal(res.configNs, 'muche', 'health 未暴露官方配置命名空间')
+  assert.ok(res.auth && res.history && res.ws, 'health 缺三段结论')
 })
