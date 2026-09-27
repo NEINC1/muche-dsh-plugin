@@ -1009,16 +1009,13 @@ window.__ModuleLoader__.load({
     }
 
     // ── 设置页（官方配置镜像读写，不走自建路由） ──
-    // 地址形态即时提示（全员远端唯一口径）：公网地址缺 /api 后缀即红字，
-    // 本机直连（localhost/127.x，回环打后端根合法）不提示。
+    // 地址形态即时提示（全员远端唯一口径）：path 为空或根即判缺 /api，
+    // 不分本机远端（没有内网用户，不做回环例外）。
     function missingApiSuffix(url) {
       const raw = String(url || '').trim()
       if (!raw) return false
       try {
         const u = new URL(raw)
-        const host = String(u.hostname || '').toLowerCase()
-        if (host === 'localhost' || host === '::1' || host === '[::1]') return false
-        if (/^127\./.test(host)) return false
         const p = String(u.pathname || '').replace(/\/+$/, '')
         return p === ''
       } catch (e) { return false }

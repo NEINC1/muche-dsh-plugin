@@ -109,3 +109,10 @@ test('地址缺 /api 即时提示（全员远端唯一口径）', () => {
 test('面板错误透传 NOT_API 指引（不吞成无差别报错）', () => {
   assert.ok(/少了 \/api 后缀/.test(BUNDLE), '面板未透传 NOT_API 可操作指引')
 })
+
+test('地址判定无回环例外（全员远端，裸 path 即判缺）', () => {
+  const fn = BUNDLE.match(/function missingApiSuffix\(url\) \{[\s\S]*?\n    \}/)
+  assert.ok(fn, '未找到 missingApiSuffix')
+  assert.ok(!/localhost/.test(fn[0]), '仍保留 localhost 例外')
+  assert.ok(!/127\\/.test(fn[0]), '仍保留 127.x 例外')
+})
