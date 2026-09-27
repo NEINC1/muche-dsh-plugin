@@ -74,3 +74,17 @@ test('summarizeDiag 非对象回 null', () => {
 test('wsVia 无 location 回空串（node 下）', () => {
   assert.equal(wsVia(), '')
 })
+
+test('无悬空引用：entry 用到的 pure/api 导出必须已导入（0.6.1 wsVia 空白面板教训）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const entry = readFileSync(new URL('../client/src/entry.js', import.meta.url), 'utf8')
+  const body = entry.slice(entry.indexOf('window.__ModuleLoader__'))
+  const imported = new Set()
+  for (const m of entry.matchAll(/import\s*\{([^}]+)\}\s*from\s*'\.\/(pure|api)\.js'/g)) {
+    for (const n of m[1].split(',')) imported.add(n.trim())
+  }
+  for (const n of ['localHM', 'fmtTime', 'gapMinutes', 'summarizeDiag', 'wsVia', 'wsViaSuffix', 'apiGet', 'apiPost', 'missingApiSuffix']) {
+    const uses = body.match(new RegExp(`(?<![A-Za-z0-9_$.])${n}(?![A-Za-z0-9_])`, 'g')) || []
+    if (uses.length > 0) assert.ok(imported.has(n), `悬空引用：${n} 用了 ${uses.length} 次但未导入（面板渲染即 ReferenceError 空白）`)
+  }
+})

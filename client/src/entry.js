@@ -5,7 +5,7 @@
 // 读写，存储唯一真源是宿主 profile patch（见 lib/config.js）。
 // 纯函数在 ./pure.js（直测），同源调用在 ./api.js；本文件只留工厂与 UI。
 import { apiGet, apiPost } from './api.js'
-import { fmtTime, gapMinutes, localHM, missingApiSuffix, summarizeDiag, wsViaSuffix } from './pure.js'
+import { fmtTime, gapMinutes, localHM, missingApiSuffix, summarizeDiag, wsVia, wsViaSuffix } from './pure.js'
 window.__ModuleLoader__.load({
   id: 'muche-dsh-plugin',
   factory: (require) => {

@@ -65,7 +65,7 @@
     if (res.stage) return "本机到后端不通（" + res.stage + "）：" + (res.error || "");
     return "探针异常：" + (res.error || "未知");
   }
-  function wsVia2() {
+  function wsVia() {
     try {
       if (typeof location === "undefined" || !location.host) return "";
       return location.protocol + "//" + location.host;
@@ -74,7 +74,7 @@
     }
   }
   function wsViaSuffix() {
-    const via = wsVia2();
+    const via = wsVia();
     return via ? "（经" + via + "）" : "";
   }
   function missingApiSuffix(url) {
