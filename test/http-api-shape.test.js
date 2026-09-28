@@ -11,15 +11,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { UPSTREAM_HTML } from '../lib/errors.js'
-import { fetchJson } from '../lib/http.js'
+import { __resetStackFetch, __setStackFetch, fetchJson } from '../lib/http.js'
 
-function withFetch(fn, body) {
-  const prev = globalThis.fetch
-  globalThis.fetch = fn
+async function withFetch(fn, body) {
+  // 经内部 seam 注入（fetchJson 走传输单源，不再直读全局 fetch）。
+  __setStackFetch(fn)
   try {
-    return body()
+    return await body()
   } finally {
-    globalThis.fetch = prev
+    __resetStackFetch()
   }
 }
 
