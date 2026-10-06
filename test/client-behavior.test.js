@@ -54,6 +54,12 @@ test('地址形态即时提示与过期图占位', () => {
   assert.ok(BUNDLE.includes('图片已过期'), '缺少过期图占位')
 })
 
+test('聊天输入框捕获剪贴板图片并复用图片选择预览链', () => {
+  assert.ok(BUNDLE.includes('clipboardImageFiles'), '没有读取剪贴板图片')
+  assert.ok(BUNDLE.includes('onPaste'), '聊天输入框没有粘贴处理器')
+  assert.ok(BUNDLE.includes('pickFiles'), '粘贴图片没有复用既有校验与预览')
+})
+
 test('额度与换配置语义', () => {
   assert.ok(BUNDLE.includes('message_quota_exhausted'), '额度耗尽码缺失')
   assert.ok(BUNDLE.includes('quotaUntil'), '额度倒计时缺失')

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 
 import { missingApiSuffix as hostMissing } from '../lib/backend.js'
 import {
+  clipboardImageFiles,
   fmtTime,
   gapMinutes,
   localHM,
@@ -65,6 +66,28 @@ test('gapMinutes 非法回 null', () => {
   assert.equal(gapMinutes('2020-01-01T00:00:00.000Z', '2020-01-01T01:00:00.000Z'), 60)
 })
 
+test('剪贴板图片优先取 items，缺少文件时回退 files', () => {
+  const pasted = { type: 'image/png' }
+  assert.deepEqual(clipboardImageFiles({
+    items: [
+      { kind: 'string', type: 'text/plain', getAsFile: () => null },
+      { kind: 'file', type: 'image/png', getAsFile: () => pasted },
+    ],
+    files: [pasted],
+  }), [pasted])
+  assert.deepEqual(clipboardImageFiles({
+    items: [{ kind: 'file', type: 'image/png', getAsFile: () => null }],
+    files: [pasted],
+  }), [pasted])
+})
+
+test('纯文本剪贴板不抽取图片', () => {
+  assert.deepEqual(clipboardImageFiles({
+    items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }],
+    files: [],
+  }), [])
+})
+
 test('summarizeDiag 非对象回 null', () => {
   assert.equal(summarizeDiag(null), null)
   assert.equal(summarizeDiag('x'), null)
@@ -83,7 +106,7 @@ test('无悬空引用：entry 用到的 pure/api 导出必须已导入（0.6.1 w
   for (const m of entry.matchAll(/import\s*\{([^}]+)\}\s*from\s*'\.\/(pure|api)\.js'/g)) {
     for (const n of m[1].split(',')) imported.add(n.trim())
   }
-  for (const n of ['localHM', 'fmtTime', 'gapMinutes', 'summarizeDiag', 'wsVia', 'wsViaSuffix', 'apiGet', 'apiPost', 'missingApiSuffix']) {
+  for (const n of ['localHM', 'fmtTime', 'gapMinutes', 'clipboardImageFiles', 'summarizeDiag', 'wsVia', 'wsViaSuffix', 'apiGet', 'apiPost', 'missingApiSuffix']) {
     const uses = body.match(new RegExp(`(?<![A-Za-z0-9_$.])${n}(?![A-Za-z0-9_])`, 'g')) || []
     if (uses.length > 0) assert.ok(imported.has(n), `悬空引用：${n} 用了 ${uses.length} 次但未导入（面板渲染即 ReferenceError 空白）`)
   }

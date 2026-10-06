@@ -5,7 +5,7 @@
 // 读写，存储唯一真源是宿主 profile patch（见 lib/config.js）。
 // 纯函数在 ./pure.js（直测），同源调用在 ./api.js；本文件只留工厂与 UI。
 import { apiGet, apiPost } from './api.js'
-import { fmtTime, gapMinutes, localHM, missingApiSuffix, summarizeDiag, wsVia, wsViaSuffix } from './pure.js'
+import { clipboardImageFiles, fmtTime, gapMinutes, localHM, missingApiSuffix, summarizeDiag, wsVia, wsViaSuffix } from './pure.js'
 window.__ModuleLoader__.load({
   id: 'muche-dsh-plugin',
   factory: (require) => {
@@ -890,6 +890,12 @@ window.__ModuleLoader__.load({
             ref: inputRef, className: 'muche-field', value: input,
             placeholder: quotaUntil > Date.now() ? '额度已用完…' : (thinking ? '小沐正在想…（可继续发）' : '发消息…'),
             onChange: (e) => setInput(e.target.value),
+            onPaste: (e) => {
+              const files = clipboardImageFiles(e.clipboardData)
+              if (!files.length) return
+              e.preventDefault()
+              pickFiles(files)
+            },
             onKeyDown: (e) => { if (e.key === 'Enter') send() },
             disabled: quotaUntil > Date.now(),
             style: { flex: 1 },

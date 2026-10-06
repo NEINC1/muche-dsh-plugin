@@ -54,6 +54,12 @@
       return null;
     }
   }
+  function clipboardImageFiles(clipboard) {
+    if (!clipboard) return [];
+    const fromItems = Array.from(clipboard.items || []).filter((item) => item.kind === "file" && String(item.type || "").startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
+    if (fromItems.length > 0) return fromItems;
+    return Array.from(clipboard.files || []).filter((file) => String(file.type || "").startsWith("image/"));
+  }
   function summarizeDiag(res) {
     if (!res || typeof res !== "object") return null;
     const b = res && res.backend || {};
@@ -1047,6 +1053,12 @@
               value: input,
               placeholder: quotaUntil > Date.now() ? "额度已用完…" : thinking ? "小沐正在想…（可继续发）" : "发消息…",
               onChange: (e) => setInput(e.target.value),
+              onPaste: (e) => {
+                const files = clipboardImageFiles(e.clipboardData);
+                if (!files.length) return;
+                e.preventDefault();
+                pickFiles(files);
+              },
               onKeyDown: (e) => {
                 if (e.key === "Enter") send();
               },

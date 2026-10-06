@@ -40,6 +40,18 @@ export function gapMinutes(a, b) {
   } catch (e) { return null }
 }
 
+// 只取剪贴板图片文件；没有图片时由浏览器继续处理原生文本粘贴。
+export function clipboardImageFiles(clipboard) {
+  if (!clipboard) return []
+  const fromItems = Array.from(clipboard.items || [])
+    .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+  if (fromItems.length > 0) return fromItems
+  return Array.from(clipboard.files || [])
+    .filter((file) => String(file.type || '').startsWith('image/'))
+}
+
 // 探针回包翻人话（只读 stage/backend，不碰 token——回包本来就没有）。
 export function summarizeDiag(res) {
   if (!res || typeof res !== 'object') return null
