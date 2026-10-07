@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "capabilities": ["receipts", "session-query", "interactive-v2", "turn-origin"],
+  "errors": {
+    "turn_pending": "原任务尚未进入自己的执行轮次，追加仍在等待受理",
+    "session_missing": "会话不存在，可能已被删除；旧会话已失效",
+    "alias_unknown": "工作区中没有这个会话别名",
+    "alias_expired": "这个会话别名已超过保留期",
+    "workspace_unavailable": "会话工作区暂时无法读取或提交",
+    "bridge_unavailable": "用户本机 dsh 桥接未连接",
+    "bridge_lost": "执行期间 dsh 桥接断开，执行结果尚未确认",
+    "host_not_ready": "dsh 宿主所需服务尚未就绪",
+    "owner_offline": "这个会话所属的 dsh 宿主当前不在线",
+    "owner_unknown": "尚未确认这个会话属于哪台 dsh 宿主",
+    "upgrade_required": "dsh 插件协议不支持可靠回执，需要升级插件",
+    "model_unavailable": "dsh 当前没有可用模型",
+    "admission_rejected": "dsh 没有受理本次指令",
+    "cancelled": "dsh 执行已取消",
+    "blocked": "dsh 执行被阻塞",
+    "interrupted": "dsh 执行已中断",
+    "execution_error": "dsh 执行出现错误",
+    "output_limit": "dsh 已达到输出上限，只有部分结果，任务尚未完成",
+    "interactive_expired": "dsh 的这次交互等待已经结束",
+    "invalid_answer": "决策内容与 dsh 的问题不匹配",
+    "command_conflict": "同一指令标识被用于不同内容",
+    "control_ack_timeout": "dsh 指令接收回执尚未确认",
+    "execution_timeout": "dsh 活跃执行时间超限，执行结果尚未确认",
+    "protocol_error": "dsh 返回的协议数据不完整",
+    "unknown": "dsh 返回了未识别的失败，具体原因见详情"
+  }
+}

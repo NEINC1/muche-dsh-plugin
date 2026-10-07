@@ -43,15 +43,15 @@ test('readConfig：引用与普通值同读，空即空不回落（OI-078 未配
   const ref = (v) => ({ get: () => v })
   assert.deepEqual(
     readConfig({ backendUrl: ref('http://x/api'), apiKey: ref('k'), workspacePath: ref('/w') }),
-    { backendUrl: 'http://x/api', apiKey: 'k', workspacePath: '/w' },
+    { backendUrl: 'http://x/api', apiKey: 'k', workspacePath: '/w', bridgeId: '' },
   )
   assert.deepEqual(
     readConfig({ backendUrl: '', apiKey: '', workspacePath: '' }),
-    { backendUrl: '', apiKey: '', workspacePath: '' },
+    { backendUrl: '', apiKey: '', workspacePath: '', bridgeId: '' },
   )
   assert.deepEqual(
     readConfig(undefined),
-    { backendUrl: '', apiKey: '', workspacePath: '' },
+    { backendUrl: '', apiKey: '', workspacePath: '', bridgeId: '' },
   )
 })
 

@@ -81,7 +81,7 @@ function routeCtx(overrides = {}) {
 
 function bridgeCtx({ backendUrl = '', apiKey = 'k-test', withDeps = true } = {}) {
   const tmp = mkdtempSync(join(tmpdir(), 'muche-startup-'))
-  const config = { backendUrl, apiKey, workspacePath: tmp }
+  const config = { backendUrl, apiKey, workspacePath: tmp, bridgeId: tmp }
   const sessionEvents = []
   const disposeFns = []
   const ctx = {
