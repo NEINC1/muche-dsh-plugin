@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。插件版本见 `package.json` 的 `version`（0.7.0 使用桥接协议 v2），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。插件版本见 `package.json` 的 `version`（0.7.0 起使用桥接协议 v2），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -71,7 +71,11 @@ dsh plugin remove 'muche-dsh-plugin'
 
 用户等待暂停活跃执行计时。卸载、断连、取消、上限与错误均清理订阅/等待，保留终态和部分输出；技术失效不表示用户拒绝。宿主 `bridgeId` 经官方 settings 保存且同宿主双挂载共享，排障勿删除或复制该身份。
 
+回答与追加的交付有独立尝试预算；原任务结束、交互超期或交付耗尽后，本地技术收口保留原决定和未知回执，resolver 关闭最多尝试一次，不等待离线宿主无限返回 ACK。未完成追加与恢复事实原子保存，正常等待用户不消耗交付次数。已结束问题的重复上报不会重新暂停后端执行计时。
+
 执行核按上游锁定的 `0.1.7-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
+
+执行前同时订阅 `agent/inbox/claimed`，按消息 rpcId 与所属 turn 绑定来源；上游 pre-step 在写入正文前拒绝或结束时仍保留实际终态，其他 turn 不结算当前任务，所有退出清理两类订阅。
 
 依赖：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-llm` 为 peer（用宿主同 cohort 的服务和消息类型）；`ws`、`undici` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
 

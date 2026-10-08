@@ -24,6 +24,7 @@
     "invalid_answer": "决策内容与 dsh 的问题不匹配",
     "command_conflict": "同一指令标识被用于不同内容",
     "control_ack_timeout": "dsh 指令接收回执尚未确认",
+    "control_delivery_exhausted": "dsh 指令交付恢复已耗尽，原指令的应用结果见保留回执",
     "execution_timeout": "dsh 活跃执行时间超限，执行结果尚未确认",
     "protocol_error": "dsh 返回的协议数据不完整",
     "unknown": "dsh 返回了未识别的失败，具体原因见详情"
