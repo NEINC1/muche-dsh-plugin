@@ -1,59 +1,52 @@
-/**
- * backend-ws-url.test.js — 到后端 upgrade 目标构造守卫（OI-078 收口）。
- *
- * backendUpgradeTarget 与 BackendWs 私有 #wsUrl 同语义两遍实现，
- * 收口为 backend_ws.js 唯一导出 buildBackendWsUrl（桥接/上游/探针共用）。
- * 锁：path 前缀保留（丢 /api 即落 SPA 首页）/ https 通道 / token 编码 /
- * 非法与空地址抛错（调用方收口，空地址＝未配置）。
- */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-
+import { buildApiUrl, normalizeBackendUrl } from '../lib/backend.js'
 import { buildBackendWsUrl } from '../lib/backend_ws.js'
+import { NEED_SETUP, TARGET } from '../lib/errors.js'
 
-// 根因回归：backendUrl 的 path（远端 /api 前缀）必须原样保留，
-// 否则远端 WS 落到 nginx SPA 首页而永远握手失败。
-test('同机直连：upgrade 打后端 /ws', () => {
-  const t = buildBackendWsUrl('http://127.0.0.1:8000', 'k1')
-  assert.equal(t.secure, false)
-  assert.equal(t.host, '127.0.0.1')
-  assert.equal(String(t.port), '8000')
-  assert.equal(t.path, '/ws?token=k1')
-  assert.equal(t.url, 'ws://127.0.0.1:8000/ws?token=k1')
+const fixtures = [
+  ['http://127.0.0.1:8000', 'http://127.0.0.1:8000/ws', '/ws'],
+  ['https://example.com/', 'https://example.com/ws', '/ws'],
+  ['http://example.com/api/', 'http://example.com/api/ws', '/api/ws'],
+  ['https://example.com/muche/v2', 'https://example.com/muche/v2/ws', '/muche/v2/ws'],
+  ['https://example.com/any%2Fprefix/', 'https://example.com/any%2Fprefix/ws', '/any%2Fprefix/ws'],
+  ['http://[::1]:8000/custom', 'http://[::1]:8000/custom/ws', '/custom/ws'],
+]
+
+test('HTTP与WS共用基址规则，root和任意部署前缀一致', () => {
+  for (const [base, httpUrl, pathname] of fixtures) {
+    assert.equal(normalizeBackendUrl(base).ok, true)
+    assert.equal(buildApiUrl(base, '/ws').url, httpUrl)
+    const target = buildBackendWsUrl(base, 'k')
+    const wsUrl = new URL(target.url)
+    assert.equal(wsUrl.pathname, pathname)
+    assert.equal(target.path, pathname + '?token=k')
+    assert.equal(wsUrl.protocol, base.startsWith('https:') ? 'wss:' : 'ws:')
+    wsUrl.protocol = target.secure ? 'https:' : 'http:'
+    wsUrl.search = ''
+    assert.equal(wsUrl.href, httpUrl)
+  }
 })
 
-test('远端反代：/api 前缀保留，upgrade 打后端 /api/ws', () => {
-  const t = buildBackendWsUrl('http://124.222.23.51/api', 'k2')
-  assert.equal(t.secure, false)
-  assert.equal(t.host, '124.222.23.51')
-  assert.equal(String(t.port), '80')
-  assert.equal(t.path, '/api/ws?token=k2')
+test('https默认443，http默认80，显式端口不丢', () => {
+  assert.equal(buildBackendWsUrl('https://example.com/custom', 'k').port, 443)
+  assert.equal(buildBackendWsUrl('http://example.com', 'k').port, 80)
+  assert.equal(buildBackendWsUrl('https://example.com:8443/custom', 'k').port, '8443')
 })
 
-test('远端反代：末尾斜杠归一后仍保留 /api', () => {
-  const t = buildBackendWsUrl('http://124.222.23.51/api/', 'k3')
-  assert.equal(t.path, '/api/ws?token=k3')
+test('token/channel正确编码，面板空channel不冒充桥接池', () => {
+  const token = 'a b&c=/#中文'
+  const panel = buildBackendWsUrl('https://example.com/custom/', token, '')
+  assert.equal(panel.path, '/custom/ws?token=' + encodeURIComponent(token))
+  assert.equal(new URL(panel.url).searchParams.get('token'), token)
+  assert.equal(new URL(panel.url).searchParams.has('channel'), false)
+  assert.equal(new URL(buildBackendWsUrl('https://example.com', 'k', 'dsh-bridge').url).searchParams.get('channel'), 'dsh-bridge')
 })
 
-test('https 后端：走安全通道且默认 443', () => {
-  const t = buildBackendWsUrl('https://example.com/muche', 'k4')
-  assert.equal(t.secure, true)
-  assert.equal(String(t.port), '443')
-  assert.equal(t.path, '/muche/ws?token=k4')
-  assert.ok(t.url.startsWith('wss://'))
-})
-
-test('token 按 query 编码', () => {
-  const t = buildBackendWsUrl('http://127.0.0.1:8000', 'a b&c=')
-  assert.equal(t.path, '/ws?token=' + encodeURIComponent('a b&c='))
-})
-
-test('面板池无 channel 参数；桥接带 channel', () => {
-  assert.ok(!buildBackendWsUrl('http://127.0.0.1:8000', 'k', '').path.includes('channel='))
-  assert.ok(buildBackendWsUrl('http://127.0.0.1:8000', 'k', 'dsh-bridge').path.includes('channel=dsh-bridge'))
-})
-
-test('非法与空地址抛错（调用方收口为断开，不崩进程）', () => {
-  assert.throws(() => buildBackendWsUrl('not a url', 'k'))
-  assert.throws(() => buildBackendWsUrl('', 'k'), /未配后端地址/)
+test('HTTP/WS在发请求前拒绝同一批非法基址，不剥掉query/hash/凭据', () => {
+  for (const base of ['', 'not a url', 'ftp://example.com/api', 'ws://example.com', 'https://user:private@example.com/path', 'https://example.com/path?private=1', 'https://example.com/path#private']) {
+    const expected = base ? TARGET : NEED_SETUP
+    assert.equal(buildApiUrl(base, '/ws').code, expected)
+    assert.throws(() => buildBackendWsUrl(base, 'k'), (error) => error.code === expected && error.message === '请检查配置')
+  }
 })

@@ -33,23 +33,30 @@ test('翻页防抖与探底', () => {
   assert.ok(BUNDLE.includes('setReachedStart'), '到底未探底')
 })
 
-test('实时下行走同源SSE，上行恒走HTTP', () => {
-  assert.ok(BUNDLE.includes("new EventSource('/api/muche/events')"), 'SSE未走同源相对地址')
-  assert.ok(BUNDLE.includes('this.listeners'), 'SSE帧未进监听总线')
+test('实时下行只有一条同源 SSE 通道，上行恒走 HTTP', () => {
+  assert.ok(BUNDLE.includes("createEventSource('/api/muche/events')"), 'SSE未走同源相对地址')
+  assert.ok(BUNDLE.includes('subscribeFrames'), 'SSE帧未进监听总线')
   assert.ok(BUNDLE.includes('/api/muche/chat'), '上行未走HTTP聊天口')
-})
-
-test('健康统一口：用health，无旧三口残留', () => {
-  assert.ok(BUNDLE.includes('/api/muche/health'), '未改调统一健康口')
-  for (const old of ['/api/muche/status', '/api/muche/test', '/api/muche/ws-diag']) {
-    assert.ok(!BUNDLE.includes(old), `旧口残留：${old}`)
+  // 旧的多通道 Store 一旦复活就会出现两个「在线」真源。
+  for (const dead of ['new WebSocket(', 'wsOpen', 'faultStore.subscribe']) {
+    assert.ok(!BUNDLE.includes(dead), `旧下行通道残留：${dead}`)
   }
-  assert.ok(BUNDLE.includes('configNs'), '启动未取配置命名空间')
 })
 
-test('地址形态即时提示与过期图占位', () => {
-  assert.ok(BUNDLE.includes('missingApiSuffix'), '缺少地址形态判定')
-  assert.ok(BUNDLE.includes('地址少了 /api 后缀'), '缺少缺后缀红字')
+test('运行状态经唯一镜像消费，并保留配置命名空间用于绑定官方表单', () => {
+  assert.ok(BUNDLE.includes('/api/muche/runtime'), '未读取完整运行状态快照')
+  assert.ok(BUNDLE.includes('createRuntimeClient'), '未使用运行状态镜像')
+  assert.ok(BUNDLE.includes('X-Muche-Runtime'), '请求未带运行身份栅栏')
+  assert.ok(BUNDLE.includes('configNs'), '未消费配置命名空间')
+})
+
+test('不再预判地址形态（后端基址归项目定，插件无权规定 /api 后缀）', () => {
+  // 原先强制 missingApiSuffix + 「地址少了 /api 后缀」红字，2026-10-08 移除：
+  // 用户可能改用别的路径，插件硬判会长期误报。成不成立由「测试连接」说了算。
+  assert.ok(!BUNDLE.includes('missingApiSuffix'), '地址形态判定不应回到客户端')
+  for (const stale of ['地址少了 /api 后缀', '可能少了 /api 后缀', '/api 后缀必填']) {
+    assert.ok(!BUNDLE.includes(stale), `残留形态提示：${stale}`)
+  }
   assert.ok(BUNDLE.includes('vision_descriptions'), '未读vision描述')
   assert.ok(BUNDLE.includes('图片已过期'), '缺少过期图占位')
 })

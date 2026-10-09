@@ -31,7 +31,19 @@ dsh plugin add muche-dsh-plugin
 1. 打开 dsh 设置 → 小沐，填后端地址和 API key（小沐后台生成），保存。
 2. 点左下角「小沐」开聊。输入框可用 `Ctrl+V` 粘贴剪贴板图片，和点「图」按钮选图一样进入预览、校验与发送；纯文本粘贴保留浏览器原行为。反向桥接配好 key 即在线，无需额外操作。
 
-后端地址口径（全员远端唯一口径）：填 `<公网基址>/api`（公网入口只把 `/api` 反代到后端；地址栏缺后缀即时红字，保存时自动补 `/api` 并明示，错路径直接拒存）；不再提供同机直连分支。统一健康口 `GET /api/muche/health` 一次返回鉴权＋历史＋WS 三段结论，设置页“测试连接”可带候选值试连（不保存）。
+后端地址口径：填实际后端基址（如 `<公网基址>/api`）。插件不再补写、不再要求 `/api` 结尾、也不替用户判定地址形态——部署路径归项目决定，成不成立由「测试连接」的真实请求说了算。统一健康口 `GET /api/muche/health` 一次返回鉴权＋历史＋WS 三段结论，设置页「测试连接」可带候选值试连（不写回配置）。
+
+## 面板状态与提示
+
+标题栏指示的是**聊天通道**是否可收发（与反向桥接无关）：
+
+| 显示 | 含义 |
+|---|---|
+| 连接中 | 启动后正在建立聊天连接 |
+| 在线 | 收发两侧都已就绪 |
+| 离线 | 连接不可用 |
+
+配置类问题统一显示「请检查配置」，不出现地址、接口路径等技术细节；网络中断显示「连接暂时中断，正在重连」，恢复后自动消失；额度耗尽是独立提示，不影响在线状态。结构性故障固定在面板顶部、不随消息滚动消失。
 
 ## 卸载
 
@@ -48,7 +60,9 @@ dsh plugin remove 'muche-dsh-plugin'
 <details>
 <summary>架构（勿改回）与模块说明</summary>
 
-小沐聊天 = 插件自绘面板 + 直连后端（HTTP 历史 + WS 双向），**不进 dsh agent 循环、不建 dsh 会话**（dsh 会话的隐藏机制与可聊天互斥，会话内 LLM 调用会注入 AGENTS.md 等噪音——面板形态从根上消除注入面）。
+小沐聊天 = 插件自绘面板 + 直连后端（HTTP 收发 + 后端 WS 下行），**不进 dsh agent 循环、不建 dsh 会话**（dsh 会话的隐藏机制与可聊天互斥，会话内 LLM 调用会注入 AGENTS.md 等噪音——面板形态从根上消除注入面）。
+
+状态只有一条链路：官方配置 → 宿主运行状态（`runtime-state.js`）→ 完整快照／SSE → 浏览器镜像（`client/src/runtime-store.js`）→ 面板呈现。每个维度只有一个真源：连接是否可用、某次操作是否失败、输入是否合规、额度是否用尽是四个独立维度，互不覆盖。所有异步结果按 `{runtimeId, configNs, generation}` 校验代际，配置一改，HTTP、面板下行与桥接同时切换，旧的迟到结果一律拒收。
 
 | 文件 | 职责 |
 |---|---|
@@ -56,16 +70,20 @@ dsh plugin remove 'muche-dsh-plugin'
 | `lib/index.js` | Host 入口（inject/apply） |
 | `lib/config.js` | 插件 Config（全 volatile，官方 settings 读写） |
 | `lib/backend.js` | 后端地址唯一真源：归一＋拼装＋形态判定 |
-| `lib/errors.js` | 9 码错误分类唯一真源（调用方按码分支，不猜正文） |
-| `lib/http.js` | 后端 JSON 请求封装（归一前置＋UPSTREAM_HTML 分流）＋调用唯一出口 |
-| `lib/routes.js` | `/api/muche/{chat,history,image,health}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID） |
+| `lib/errors.js` | 失败分类唯一真源（`classifyFailure` 返回 kind/code/text/advice/retryable；调用方只给事实，不猜正文、不猜地址形态） |
+| `lib/http.js` | 后端 JSON/二进制请求唯一出口（归一前置＋UPSTREAM_HTML 分流） |
+| `lib/runtime-state.js` | 宿主运行状态 Owner：配置代际、聊天收发就绪、桥接生命周期的唯一投影（快照无凭据，订阅即回放当前全量） |
+| `lib/runtime-contract.js` | 宿主/浏览器共用的快照契约与故障去重（同因只去重一次，无关错误不吞） |
+| `lib/routes.js` | `/api/muche/{runtime,chat,history,image,health,events}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID） |
 | `lib/connections.js` | 连接生命周期唯一 Owner（面板上游＋桥接各持一个 ChannelConnection，指纹换连） |
-| `lib/backend_ws.js` | 后端 WS 传输类（桥接通道＋面板 SSE 上游，ping/重连/缓冲） |
+| `lib/backend_ws.js` | 后端 WS 传输类（桥接通道＋面板 SSE 上游，ping/重连/缓冲；`ready` 只由后端真实 hello 置真） |
+| `lib/panel-events.js` | 面板 SSE 扇出 Owner：首位订阅先发完整快照，业务帧按配置 context 盖章 |
+| `lib/register-guard.js` | 注册事务守卫：双挂载降级时原子撤销本轮注册，不留混合 Owner 的孤儿路由 |
 | `lib/dsh-bridge.js` + `lib/dsh-call.js` | 反向桥接：宿主归属、稳定指令、应用回执、只读查询；执行订阅先于 prompt，按所属 turn 收口 |
 | `lib/protocol.json` | 桥接 v2 版本、能力和执行失败枚举的唯一真源；后端读取同一文件 |
-| `client/src/` | 面板源码（`pure.js` 纯函数＋`api.js` 同源封装＋`entry.js` 工厂与 UI），esbuild 打包到 `client/client.js`（构建产物随包发布，不手改） |
+| `client/src/` | 面板源码（`pure.js` 纯格式函数＋`api.js` 同源封装＋`runtime-store.js` 浏览器镜像＋`entry.js` 工厂与 UI），esbuild 打包到 `client/client.js`（构建产物随包发布，不手改） |
 
-反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。会话不存在保留具体上游事实，由小沐说明并按剩余任务续接新会话；失效的 `sN` 不再复用。断连与未知结果保留受理确定性，不据此重做副作用任务；重启恢复先只读查询原 task。
+反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力，后端以 `dsh_hello_ack` 确认登记成功与否（成功带 `host_id` 回显，失败带已有枚举 `code` 且不登记）；插件只认该 ACK 为登记事实，不以 socket hello 或本地 ready 代替，未收到 ACK 前保持 starting。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。会话不存在保留具体上游事实，由小沐说明并按剩余任务续接新会话；失效的 `sN` 不再复用。断连与未知结果保留受理确定性，不据此重做副作用任务；重启恢复先只读查询原 task。
 
 在途追加只在相同 live run 的自有 turn 使用公开 `Agent.steer`，用同 cohort 的 `createUserMessage` 构造消息并同步受理；原任务尚未进入自有 turn 时返回 `turn_pending`，后端保留同一 `append_id` 重试。终态后拒收，不转成无人收结果的新轮。明确拒收的追加保留完整任务，等原任务结果落账后由小沐续办；曾丢失回执的追加仍保留结果未知事实。授权/提问先登记 resolver 再经 `dsh_interactive` 上行，每次交互有独立 opaque id，原始问题与选项完整保留。其他 turn 透传。小沐能拿捏就提交决定，需要用户时提交真实问题并保留等待；`dsh_decide_result` 确认实际应用后才算完成。宿主进程缓存相同 `command_id` 的回执：活跃 run 的收据保留，终态收据按最近 200 项收敛；相同身份不同内容拒收。
 

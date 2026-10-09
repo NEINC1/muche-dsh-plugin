@@ -15,6 +15,8 @@ import { readFileSync } from 'node:fs'
 
 import { registerDshBridge, requestDshBridgeRefresh } from '../lib/dsh-bridge.js'
 import { registerRoutes } from '../lib/routes.js'
+import { createRuntimeState } from '../lib/runtime-state.js'
+import { projectClientRuntime } from '../lib/runtime-contract.js'
 
 const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const BRIDGE_SRC = readFileSync(new URL('../lib/dsh-bridge.js', import.meta.url), 'utf8')
@@ -61,10 +63,15 @@ test('桥接缺依赖时停用不抛（面板照常）', async () => {
 })
 
 test('首装空 key 时面板开门即见指引', () => {
-  const m = CLIENT_SRC.match(/const loadHistory = React\.useCallback\([^=]*=> \{([\s\S]*?)\n\s*\}, \[\]\)/)
-  assert.ok(m, '未找到 loadHistory')
-  assert.ok(/!res\.ok/.test(m[1]), 'loadHistory 未处理 !ok 分支——首装空 key 时面板仍静默空白')
-  assert.ok(/setError\(res\.error\)/.test(m[1]), 'loadHistory 失败时未把后端指引钉出来')
+  // 首装没有任何 key：runtime 已提交配置问题，面板开门必须显示它，而不是空白。
+  // 指引来自宿主运行状态，不再由客户端自建 faultStore 复述。
+  assert.ok(CLIENT_SRC.includes("reportFailure(res"), '历史失败未上报统一出口')
+  assert.ok(!/faultStore\.setConfig/.test(CLIENT_SRC), '客户端不得再自建配置故障源')
+  const runtime = createRuntimeState({ configNs: 'muche', runtimeId: 'market-test' })
+  runtime.configure({ backendUrl: '', apiKey: '' })
+  const projected = projectClientRuntime(runtime.getSnapshot(), { status: 'ready', synced: true })
+  assert.equal(projected.problem.text, '请检查配置')
+  assert.equal(projected.label, '离线', '配置不可用时不得显示在线')
 })
 
 test('配置走官方服务：自建 config 路由已删，health 暴露 configNs', async () => {

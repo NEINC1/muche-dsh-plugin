@@ -105,16 +105,25 @@ test('health GET 三段全形：auth 过＋history 过＋ws 段定位 /api', asy
   }
 })
 
-test('health POST 候选值：错地址在 fetch 前即拦，码为 NOT_API', async () => {
+test('health POST 候选值：三种失败各按真实事实分类，不猜地址形态', async () => {
   const { server, port } = await stubBackend()
   try {
     const handlers = harness({ backendUrl: `http://127.0.0.1:${port}/api`, apiKey: 'muche_k', workspacePath: '' })
-    const res = fakeRes()
-    await handlers['/api/muche/health'](postReq({ backendUrl: 'https://h/wrong', apiKey: 'muche_k' }), res)
-    assert.equal(res.status, 200)
-    const body = JSON.parse(res.body)
-    assert.equal(body.auth.code, NOT_API)
-    assert.equal(body.history.code, NOT_API)
+    // A syntactically impossible target is rejected locally, before any socket.
+    const unusable = fakeRes()
+    await handlers['/api/muche/health'](postReq({ backendUrl: 'not a url', apiKey: 'muche_k' }), unusable)
+    const unusableBody = JSON.parse(unusable.body)
+    assert.equal(unusableBody.auth.code, 'TARGET')
+    assert.equal(unusableBody.history.code, 'TARGET')
+    assert.notEqual(unusableBody.auth.code, NOT_API, '插件无权替用户判定地址形态')
+    // A well-formed but unreachable host is a connection fact, not a configuration verdict.
+    const unreachable = fakeRes()
+    await handlers['/api/muche/health'](postReq({ backendUrl: 'http://127.0.0.1:59999/api', apiKey: 'muche_k' }), unreachable)
+    assert.equal(JSON.parse(unreachable.body).auth.kind, 'connection')
+    const good = fakeRes()
+    await handlers['/api/muche/health'](postReq({ backendUrl: `http://127.0.0.1:${port}/api`, apiKey: 'muche_k' }), good)
+    assert.equal(JSON.parse(good.body).auth.ok, true, '候选值不写回运行配置，但自身可验证')
+    assert.equal(JSON.parse(good.body).mode, 'candidate')
   } finally {
     server.close()
   }

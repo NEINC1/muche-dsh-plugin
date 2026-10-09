@@ -1,25 +1,153 @@
 (() => {
+  // lib/errors.js
+  var NEED_SETUP = "NEED_SETUP";
+  var NEED_KEY = "NEED_KEY";
+  var AUTH_FAILED = "AUTH_FAILED";
+  var NOT_API = "NOT_API";
+  var UPSTREAM_HTML = "UPSTREAM_HTML";
+  var NETWORK = "NETWORK";
+  var TIMEOUT = "TIMEOUT";
+  var CURSOR_INVALID = "CURSOR_INVALID";
+  var QUOTA = "QUOTA";
+  var RATE_LIMITED = "RATE_LIMITED";
+  var TARGET = "TARGET";
+  var FORBIDDEN = "FORBIDDEN";
+  var HOST_UNAVAILABLE = "HOST_UNAVAILABLE";
+  var INVALID_RESPONSE = "INVALID_RESPONSE";
+  var HTTP_ERROR = "HTTP_ERROR";
+  var STALE_RUNTIME = "STALE_RUNTIME";
+  var INPUT_INVALID = "INPUT_INVALID";
+  var BRIDGE_DEPENDENCIES = "BRIDGE_DEPENDENCIES";
+  var BRIDGE_STARTUP = "BRIDGE_STARTUP";
+  var BRIDGE_OFFLINE = "BRIDGE_OFFLINE";
+  var CONFIG_CODES = /* @__PURE__ */ new Set([NEED_SETUP, NEED_KEY, AUTH_FAILED, TARGET, NOT_API]);
+  var QUOTA_CODES = /* @__PURE__ */ new Set([QUOTA, "message_quota_exhausted"]);
+  var INPUT_CODES = /* @__PURE__ */ new Set([INPUT_INVALID, CURSOR_INVALID]);
+  var BRIDGE_CODES = /* @__PURE__ */ new Set([BRIDGE_DEPENDENCIES, BRIDGE_STARTUP, BRIDGE_OFFLINE]);
+  var TIMEOUT_CODES = /* @__PURE__ */ new Set([
+    "ETIMEDOUT",
+    "ESOCKETTIMEDOUT",
+    "ABORT_ERR",
+    "ERR_OPERATION_TIMED_OUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT"
+  ]);
+  var NETWORK_CODES = /* @__PURE__ */ new Set([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ECONNABORTED",
+    "EPIPE",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "ENETDOWN",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ERR_NETWORK",
+    "UND_ERR_SOCKET",
+    "CERT_HAS_EXPIRED",
+    "DEPTH_ZERO_SELF_SIGNED_CERT",
+    "SELF_SIGNED_CERT_IN_CHAIN",
+    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "ERR_TLS_CERT_ALTNAME_INVALID"
+  ]);
+  function exceptionCode(error) {
+    const seen = /* @__PURE__ */ new Set();
+    for (let e = error; e && typeof e === "object" && !seen.has(e); e = e.cause) {
+      seen.add(e);
+      if (e.name === "TimeoutError" || e.name === "AbortError" || TIMEOUT_CODES.has(e.code)) return TIMEOUT;
+      if (e.name === "NetworkError" || NETWORK_CODES.has(e.code)) return NETWORK;
+    }
+    return "";
+  }
+  function classifyFailure(fact = {}) {
+    const f = fact || {};
+    const status = Number(f.status) || 0;
+    let code = typeof f.code === "string" ? f.code : "";
+    if (!code && status === 401) code = AUTH_FAILED;
+    else if (!code && status === 403) code = FORBIDDEN;
+    else if (!code && status === 429) code = RATE_LIMITED;
+    if (!code) code = exceptionCode(f.error);
+    const out = (kind, fallback, text, advice = "", retryable = false) => ({ kind, code: code || fallback, text, advice, retryable });
+    if (CONFIG_CODES.has(code) || !code && f.kind === "config") {
+      return out("config", NEED_SETUP, "请检查配置", "打开 dsh 设置 → 小沐，检查配置后保存");
+    }
+    if (code === FORBIDDEN) {
+      return out("access", FORBIDDEN, "访问被拒绝", "请确认访问权限及来源限制");
+    }
+    if (code === RATE_LIMITED) return out("operation", RATE_LIMITED, "请求过于频繁，请稍后重试", "", true);
+    if (QUOTA_CODES.has(code) || f.kind === "quota") {
+      return out("quota", QUOTA, "消息额度已用完", "请等待额度恢复");
+    }
+    if (f.kind === "bridge" || BRIDGE_CODES.has(code)) {
+      const startup = code === BRIDGE_DEPENDENCIES || code === BRIDGE_STARTUP;
+      return out(
+        "bridge",
+        startup ? BRIDGE_STARTUP : BRIDGE_OFFLINE,
+        startup ? "本机 dsh 启动失败" : "本机 dsh 连接异常",
+        "请检查本机 dsh 状态及后端连接",
+        typeof f.retryable === "boolean" ? f.retryable : code === NETWORK || code === TIMEOUT || code === UPSTREAM_HTML
+      );
+    }
+    if (code === NETWORK || code === TIMEOUT || code === UPSTREAM_HTML) {
+      return out("connection", NETWORK, "连接暂时中断，正在重连", "请稍候，连接恢复后重试", true);
+    }
+    if (code === HOST_UNAVAILABLE || code === STALE_RUNTIME) {
+      return out(
+        "host",
+        HOST_UNAVAILABLE,
+        code === STALE_RUNTIME ? "本机插件尚未就绪" : "本机服务暂不可用",
+        "请检查本机服务与插件状态",
+        code !== STALE_RUNTIME
+      );
+    }
+    if (INPUT_CODES.has(code) || f.kind === "input") {
+      const correction = typeof f.text === "string" ? f.text : typeof f.error === "string" ? f.error : "";
+      return out(
+        "input",
+        INPUT_INVALID,
+        correction || (code === CURSOR_INVALID ? "历史位置无效，请重新加载" : "请检查输入后重试")
+      );
+    }
+    if (f.kind === "config") return out("config", TARGET, "请检查配置", "打开 dsh 设置 → 小沐，检查配置后保存");
+    if (f.kind === "access") return out("access", FORBIDDEN, "访问被拒绝", "请确认访问权限及来源限制");
+    if (f.kind === "host") return out("host", HOST_UNAVAILABLE, "本机服务暂不可用", "请检查本机服务与插件状态", true);
+    if (f.kind === "connection") return out("connection", NETWORK, "连接暂时中断，正在重连", "请稍候，连接恢复后重试", true);
+    return out(
+      "operation",
+      HTTP_ERROR,
+      f.kind === "operation" && typeof f.text === "string" && f.text ? f.text : code === INVALID_RESPONSE ? "服务响应异常，请稍后重试" : "操作未完成，请稍后重试",
+      "如仍失败，请检查服务状态",
+      status >= 500 || status === 408 || status === 425
+    );
+  }
+
   // client/src/api.js
-  async function apiGet(path) {
+  async function request(path, { method = "GET", body, context, signal } = {}) {
+    const headers = {};
+    if (body !== void 0) headers["Content-Type"] = "application/json";
+    if (context) {
+      headers["X-Muche-Runtime"] = context.runtimeId;
+      headers["X-Muche-Generation"] = String(context.generation);
+    }
     try {
-      const r = await fetch(path);
-      return await r.json().catch(() => ({ ok: false, error: "响应解析失败" }));
-    } catch (e) {
-      return { ok: false, error: "请求失败" };
+      const response = await fetch(path, { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body), signal });
+      let value;
+      try {
+        value = await response.json();
+      } catch {
+        return { ok: false, code: INVALID_RESPONSE, status: response.status, error: "连接暂时不可用", localFailure: true };
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: INVALID_RESPONSE, error: "连接暂时不可用", localFailure: true };
+      return { ...value, ok: response.ok && value.ok !== false, status: value.status ?? response.status };
+    } catch (error) {
+      if (signal?.aborted) return { ok: false, code: STALE_RUNTIME, error: "请求已取消" };
+      console.warn("muche client: same-origin request failed", String(error?.name || "Error"));
+      return { ok: false, code: HOST_UNAVAILABLE, status: 0, error: "连接暂时中断，正在重连", localFailure: true };
     }
   }
-  async function apiPost(path, body) {
-    try {
-      const r = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body || {})
-      });
-      return await r.json().catch(() => ({ ok: false, error: "响应解析失败" }));
-    } catch (e) {
-      return { ok: false, error: "请求失败" };
-    }
-  }
+  var apiGet = (path, options) => request(path, options);
+  var apiPost = (path, body, options) => request(path, { ...options, method: "POST", body });
 
   // client/src/pure.js
   function localHM(iso) {
@@ -30,71 +158,296 @@
   }
   function fmtTime(iso) {
     if (!iso) return "";
-    try {
-      if (typeof Date === "undefined") return String(iso).slice(5, 16);
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return String(iso).slice(5, 16);
-      const pad = (n) => n < 10 ? "0" + n : String(n);
-      const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
-      const now = /* @__PURE__ */ new Date();
-      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) return hm;
-      return d.getMonth() + 1 + "月" + d.getDate() + "日 " + hm;
-    } catch (e) {
-      return "";
-    }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso).slice(5, 16);
+    const hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    const now = /* @__PURE__ */ new Date();
+    if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) return hm;
+    return d.getMonth() + 1 + "月" + d.getDate() + "日 " + hm;
   }
   function gapMinutes(a, b) {
-    try {
-      if (!a || !b || typeof Date === "undefined") return null;
-      const va = new Date(a).getTime();
-      const vb = new Date(b).getTime();
-      if (Number.isNaN(va) || Number.isNaN(vb)) return null;
-      return (vb - va) / 6e4;
-    } catch (e) {
-      return null;
-    }
+    if (!a || !b) return null;
+    const x = Date.parse(a), y = Date.parse(b);
+    return Number.isFinite(x) && Number.isFinite(y) ? (y - x) / 6e4 : null;
   }
   function clipboardImageFiles(clipboard) {
     if (!clipboard) return [];
     const fromItems = Array.from(clipboard.items || []).filter((item) => item.kind === "file" && String(item.type || "").startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
-    if (fromItems.length > 0) return fromItems;
-    return Array.from(clipboard.files || []).filter((file) => String(file.type || "").startsWith("image/"));
+    return fromItems.length ? fromItems : Array.from(clipboard.files || []).filter((file) => String(file.type || "").startsWith("image/"));
   }
-  function summarizeDiag(res) {
-    if (!res || typeof res !== "object") return null;
-    const b = res && res.backend || {};
-    const where = [b.host || "", b.pathPrefix && b.pathPrefix !== "(根)" ? b.pathPrefix : ""].join("");
-    if (res.ok && res.stage === "backend-reached") {
-      return "本机到后端通（后端应答" + (res.status || "?") + "），查浏览器到本机";
+
+  // lib/runtime-contract.js
+  function sameRuntimeContext(a, b) {
+    return !!a && !!b && a.runtimeId === b.runtimeId && a.configNs === b.configNs && a.generation === b.generation;
+  }
+  function isRuntimeSnapshot(value) {
+    return value?.schema === 1 && typeof value.runtimeId === "string" && !!value.runtimeId && typeof value.configNs === "string" && !!value.configNs && Number.isSafeInteger(value.generation) && value.generation >= 0 && Number.isSafeInteger(value.seq) && value.seq >= 0 && ["connecting", "online", "offline"].includes(value.chat?.phase) && !!value.configuration && !!value.bridge;
+  }
+  function projectClientRuntime(snapshot, delivery) {
+    const phase = delivery.status === "offline" || snapshot?.chat.phase === "offline" ? "offline" : snapshot?.chat.phase === "online" && delivery.synced ? "online" : "connecting";
+    const problem = snapshot?.configuration.code ? snapshot.problem : delivery.status === "offline" ? classifyFailure({ code: HOST_UNAVAILABLE }) : snapshot?.problem || null;
+    return {
+      phase,
+      label: phase === "online" ? "在线" : phase === "offline" ? "离线" : "连接中",
+      problem,
+      context: snapshot ? { runtimeId: snapshot.runtimeId, configNs: snapshot.configNs, generation: snapshot.generation } : null,
+      snapshot
+    };
+  }
+  function isSameProblem(failure, problem) {
+    if (!failure || !problem) return false;
+    const structural = /* @__PURE__ */ new Set(["config", "connection", "host", "access"]);
+    return failure.kind === problem.kind && (structural.has(failure.kind) || failure.code === problem.code);
+  }
+
+  // client/src/runtime-store.js
+  function createRuntimeClient({ fetchSnapshot = (signal) => apiGet("/api/muche/runtime", { signal }), createEventSource = (path) => new EventSource(path), setTimer = setTimeout, clearTimer = clearTimeout, retryBaseMs = 3e3, retryMaxMs = 3e4 } = {}) {
+    const listeners = /* @__PURE__ */ new Set(), frameListeners = /* @__PURE__ */ new Set(), pendingFrames = [];
+    let snapshot = null, delivery = { status: "connecting", synced: false };
+    let view = projectClientRuntime(snapshot, delivery);
+    let source = null, sourceEpoch = 0, sourceBinding = null, streamContext = null;
+    let identityPending = false, disposed = false, started = false;
+    let retryTimer = null, deadlineTimer = null, attempts = 0, bootstrap = null, messageSeq = 0;
+    const identityMatches = (a, b) => !!a && !!b && a.runtimeId === b.runtimeId && a.configNs === b.configNs;
+    function emit() {
+      view = projectClientRuntime(snapshot, delivery);
+      if (identityPending) view = { ...view, context: null };
+      for (const fn of [...listeners]) {
+        try {
+          fn(view);
+        } catch (error) {
+          console.error("muche client: runtime subscriber failed", String(error?.name || "Error"));
+        }
+      }
     }
-    if (res.stage === "target") return "后端地址配错（" + (where || "空") + "）：" + (res.error || "");
-    if (res.stage) return "本机到后端不通（" + res.stage + "）：" + (res.error || "");
-    return "探针异常：" + (res.error || "未知");
-  }
-  function wsVia() {
-    try {
-      if (typeof location === "undefined" || !location.host) return "";
-      return location.protocol + "//" + location.host;
-    } catch (e) {
-      return "";
+    function retry() {
+      if (disposed || retryTimer) return;
+      const delay = Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(attempts++, 4));
+      retryTimer = setTimer(() => {
+        retryTimer = null;
+        open();
+        void refresh();
+      }, delay);
     }
-  }
-  function wsViaSuffix() {
-    const via = wsVia();
-    return via ? "（经" + via + "）" : "";
-  }
-  function missingApiSuffix(url) {
-    const raw = String(url || "").trim();
-    if (!raw) return false;
-    let u;
-    try {
-      u = new URL(raw);
-    } catch (e) {
-      return false;
+    function retire({ conflict = false, immediate = false, phase = "offline" } = {}) {
+      ++sourceEpoch;
+      bootstrap?.abort();
+      bootstrap = null;
+      if (deadlineTimer) {
+        clearTimer(deadlineTimer);
+        deadlineTimer = null;
+      }
+      if (source) {
+        const old = source;
+        source = null;
+        old.onopen = old.onmessage = old.onerror = null;
+        try {
+          old.close();
+        } catch (error) {
+          console.warn("muche client: stream close failed", String(error?.name || "Error"));
+        }
+      }
+      sourceBinding = streamContext = null;
+      if (conflict) {
+        identityPending = true;
+        pendingFrames.length = 0;
+      }
+      delivery = { status: phase, synced: false };
+      emit();
+      if (immediate) {
+        open();
+        void refresh();
+      } else retry();
     }
-    const p = String(u.pathname || "").replace(/\/+$/, "");
-    if (p === "" || p === "/") return true;
-    return !/(^|\/)api$/.test(p);
+    function applySnapshot(next, { stream = false } = {}) {
+      if (disposed || !isRuntimeSnapshot(next)) return false;
+      if (snapshot && next.runtimeId === snapshot.runtimeId) {
+        if (next.generation < snapshot.generation || next.seq < snapshot.seq) return false;
+        if (next.configNs !== snapshot.configNs) return false;
+      }
+      if (snapshot && !sameRuntimeContext(snapshot, next)) {
+        if (stream) {
+          console.warn("muche client: stale stream scope refused; resynchronizing");
+          retire({ conflict: true, immediate: true });
+          return false;
+        }
+        pendingFrames.length = 0;
+        if (sourceBinding && !identityMatches(sourceBinding, next)) retire({ immediate: true, phase: "connecting" });
+      }
+      snapshot = next;
+      sourceBinding = { runtimeId: next.runtimeId, configNs: next.configNs };
+      identityPending = false;
+      if (stream) {
+        delivery = { status: "ready", synced: true };
+        attempts = 0;
+        streamContext = { runtimeId: next.runtimeId, configNs: next.configNs, generation: next.generation };
+      }
+      emit();
+      return true;
+    }
+    async function refresh() {
+      if (disposed || bootstrap) return;
+      const controller = new AbortController(), before = snapshot, epoch = sourceEpoch;
+      bootstrap = controller;
+      try {
+        const result = await fetchSnapshot(controller.signal);
+        if (disposed || bootstrap !== controller || epoch !== sourceEpoch) return;
+        if (result?.ok && result.snapshot) {
+          if (streamContext && source?.readyState === 1 && sameRuntimeContext(streamContext, result.snapshot)) delivery = { status: "ready", synced: true };
+          applySnapshot(result.snapshot);
+        } else if ((result?.localFailure || result?.code === HOST_UNAVAILABLE) && !(snapshot !== before && delivery.synced)) {
+          delivery = { status: "offline", synced: false };
+          emit();
+        }
+      } catch (error) {
+        if (!disposed && !controller.signal.aborted && bootstrap === controller) {
+          console.warn("muche client: runtime bootstrap failed", String(error?.name || "Error"));
+          if (!(snapshot !== before && delivery.synced)) {
+            delivery = { status: "offline", synced: false };
+            emit();
+          }
+        }
+      } finally {
+        if (bootstrap === controller) bootstrap = null;
+      }
+    }
+    function open() {
+      if (disposed || source) return;
+      const epoch = ++sourceEpoch;
+      sourceBinding = streamContext = null;
+      let es;
+      try {
+        es = createEventSource("/api/muche/events");
+      } catch (error) {
+        console.warn("muche client: stream construction failed", String(error?.name || "Error"));
+        delivery = { status: "offline", synced: false };
+        emit();
+        retry();
+        return;
+      }
+      source = es;
+      const current = () => !disposed && source === es && sourceEpoch === epoch;
+      const armDeadline = (ms) => {
+        if (deadlineTimer) clearTimer(deadlineTimer);
+        deadlineTimer = setTimer(() => {
+          deadlineTimer = null;
+          if (current()) retire();
+        }, ms);
+      };
+      es.onopen = () => {
+        if (!current()) return;
+        streamContext = null;
+        delivery = { status: "connecting", synced: false };
+        emit();
+        armDeadline(15e3);
+        void refresh();
+      };
+      es.onmessage = (event) => {
+        if (!current()) return;
+        let frame;
+        try {
+          frame = JSON.parse(event.data);
+        } catch {
+          console.warn("muche client: malformed event frame");
+          return;
+        }
+        if (frame?.type === "runtime") {
+          if (applySnapshot(frame.snapshot, { stream: true })) armDeadline(6e4);
+          return;
+        }
+        if (!sameRuntimeContext(frame?.context, snapshot) || !sameRuntimeContext(streamContext, snapshot)) return;
+        armDeadline(6e4);
+        if (!delivery.synced) {
+          delivery = { status: "ready", synced: true };
+          emit();
+        }
+        if (frame.type === "heartbeat") return;
+        if (!frameListeners.size) {
+          pendingFrames.push(frame);
+          if (pendingFrames.length > 20) pendingFrames.shift();
+          return;
+        }
+        for (const fn of [...frameListeners]) {
+          try {
+            fn(frame);
+          } catch (error) {
+            console.error("muche client: message subscriber failed", String(error?.name || "Error"));
+          }
+        }
+      };
+      es.onerror = () => {
+        if (!current()) return;
+        delivery = { status: "offline", synced: false };
+        streamContext = null;
+        if (deadlineTimer) {
+          clearTimer(deadlineTimer);
+          deadlineTimer = null;
+        }
+        emit();
+        if (es.readyState === 2) retire();
+      };
+    }
+    return {
+      getSnapshot: () => view,
+      context: () => view.context,
+      accepts: (context) => !disposed && !identityPending && sameRuntimeContext(context, snapshot),
+      subscribe(fn) {
+        listeners.add(fn);
+        fn(view);
+        return () => listeners.delete(fn);
+      },
+      subscribeFrames(fn) {
+        frameListeners.add(fn);
+        for (const frame of pendingFrames.splice(0)) if (sameRuntimeContext(frame.context, snapshot)) fn(frame);
+        return () => frameListeners.delete(fn);
+      },
+      applySnapshot,
+      observeReply(context, result) {
+        if (disposed || identityPending || !sameRuntimeContext(context, snapshot)) return false;
+        if (result?.snapshot) applySnapshot(result.snapshot);
+        if (identityPending || !sameRuntimeContext(context, snapshot) || result?.code === STALE_RUNTIME) return false;
+        if (result?.localFailure || result?.code === HOST_UNAVAILABLE) {
+          delivery = { status: "offline", synced: false };
+          emit();
+          void refresh();
+        }
+        return true;
+      },
+      newId(prefix = "m") {
+        return `${prefix}-${Date.now()}-${++messageSeq}`;
+      },
+      start() {
+        if (started || disposed) return;
+        started = true;
+        open();
+        void refresh();
+      },
+      ensureConnected() {
+        if (!disposed && !source && !retryTimer) {
+          open();
+          void refresh();
+        }
+      },
+      refresh,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        ++sourceEpoch;
+        bootstrap?.abort();
+        bootstrap = null;
+        if (retryTimer) clearTimer(retryTimer);
+        if (deadlineTimer) clearTimer(deadlineTimer);
+        retryTimer = deadlineTimer = null;
+        if (source) {
+          source.onopen = source.onmessage = source.onerror = null;
+          source.close();
+          source = null;
+        }
+        listeners.clear();
+        frameListeners.clear();
+        pendingFrames.length = 0;
+      }
+    };
   }
 
   // client/src/entry.js
@@ -157,152 +510,22 @@
         React.useEffect(() => panelStore.subscribe(() => setOpen(panelStore.open)), []);
         return open;
       }
-      const wsStore = {
-        status: "idle",
-        // idle | connecting | open | closed
-        es: null,
-        sseOpen: false,
-        lastError: null,
-        listeners: [],
-        cfg: null,
-        msgSeq: 0,
-        diagSummary: null,
-        // 本机→后端探针结论（人话），失败自诊断一次后填入，面板直显
-        diagKey: "",
-        // 探针已跑过的配置指纹（同配置不重复打后端）
-        start(cfg) {
-          const changed = !!cfg && (this.cfg === null || cfg.apiKey !== this.cfg.apiKey || cfg.backendUrl !== this.cfg.backendUrl);
-          this.cfg = cfg || this.cfg;
-          if (!this.cfg || !this.cfg.apiKey) {
-            this._teardown();
-            return;
-          }
-          if (changed) this._teardown();
-          this._open();
-        },
-        // 失败自诊断（排障口）：通道建连失败时取一次 Host 侧探针，定位
-        // “本机→后端”还是“浏览器→本机”。同配置只跑一次（重连退避不重复打
-        // 后端）；结论进 diagSummary，面板在“未连接”后直显，无需找日志。
-        runDiag() {
-          const cfg = this.cfg;
-          if (!cfg || !cfg.apiKey) return;
-          const key = cfg.apiKey + "|" + cfg.backendUrl;
-          if (this.diagKey === key) return;
-          this.diagKey = key;
-          try {
-            apiGet("/api/muche/health").then((res) => {
-              this.diagSummary = summarizeDiag(res && res.ws);
-              this._setStatus(this.status);
-            }).catch(() => {
-            });
-          } catch (e) {
-          }
-        },
-        _teardown() {
-          this.sseOpen = false;
-          if (this.es) {
-            const old = this.es;
-            this.es = null;
-            try {
-              old.close();
-            } catch (e) {
-            }
-          }
-          this._setStatus("closed");
-        },
-        // 连接自愈:页面级周期检查(30s)。EventSource 自带断线重连，此处只补
-        // “已彻底关闭”态；cfg 缺失则重读镜像再连。保证 muche/dsh 重启后最终恢复。
-        ensureConnected() {
-          if (this.isOpen()) return;
-          if (this.status === "connecting") return;
-          if (this.cfg && this.cfg.apiKey) {
-            this._open();
-            return;
-          }
-          syncWsFromScope();
-        },
-        _setStatus(s) {
-          this.status = s;
-          for (const f of this.listeners) {
-            try {
-              f({ type: "_status", status: s });
-            } catch (e) {
-            }
-          }
-        },
-        subscribe(f) {
-          this.listeners.push(f);
-          return () => {
-            this.listeners = this.listeners.filter((x) => x !== f);
-          };
-        },
-        isOpen() {
-          return this.sseOpen === true;
-        },
-        // 上行恒走 HTTP：调用方 send() 在 false 时自动降级走同 mid 的 HTTP
-        // 发送（见 ChatPanel send），幂等由后端 ingress 边界负责。
-        send(obj) {
-          return false;
-        },
-        // SSE 下行：同源相对地址（与 apiGet 同门：http(s) 与 dsh-app:// 通用）。
-        // 帧进同一 listeners 总线，React 零改动。
-        _open() {
-          if (this.es) return;
-          if (typeof EventSource === "undefined") {
-            this.lastError = "当前页面不支持 SSE";
-            this._setStatus("error");
-            this.runDiag();
-            return;
-          }
-          this._setStatus("connecting");
-          let es;
-          try {
-            es = new EventSource("/api/muche/events");
-          } catch (e) {
-            this.lastError = "SSE 建连被拒绝: " + String(e && e.message ? e.message : e).slice(0, 200);
-            this._setStatus("error");
-            this.runDiag();
-            return;
-          }
-          this.es = es;
-          es.onopen = () => {
-            this.lastError = null;
-            this.sseOpen = true;
-            this._setStatus("open");
-          };
-          es.onmessage = (ev) => {
-            let data = null;
-            try {
-              data = JSON.parse(ev.data);
-            } catch (e) {
-              return;
-            }
-            for (const f of this.listeners) {
-              try {
-                f(data);
-              } catch (e) {
-              }
-            }
-          };
-          es.onerror = () => {
-            try {
-              if (es.readyState === EventSource.CLOSED) {
-                this.sseOpen = false;
-                this.lastError = "事件通道中断";
-                this._setStatus("closed");
-                this.runDiag();
-              }
-            } catch (e) {
-            }
-          };
-        },
-        newId(prefix) {
-          this.msgSeq += 1;
-          return prefix + "-" + Date.now() + "-" + this.msgSeq;
-        }
-      };
+      const runtimeStore = createRuntimeClient();
+      function useRuntime() {
+        const [value, setValue] = React.useState(runtimeStore.getSnapshot());
+        React.useEffect(() => runtimeStore.subscribe(setValue), []);
+        return value;
+      }
+      async function runtimeRequest(path, body) {
+        const context = runtimeStore.context();
+        if (!context) return { ok: false, stale: true, code: STALE_RUNTIME };
+        const res = body === void 0 ? await apiGet(path, { context }) : await apiPost(path, body, { context });
+        const current = runtimeStore.observeReply(context, res);
+        return current ? res : { ok: false, stale: true, code: STALE_RUNTIME };
+      }
       const scopeStore = {
         scope: null,
+        namespace: null,
         subs: [],
         set(next) {
           this.scope = next;
@@ -319,21 +542,6 @@
         const [, force] = React.useState(0);
         React.useEffect(() => scopeStore.subscribe(() => force((n) => n + 1)), []);
         return scopeStore.scope;
-      }
-      function syncWsFromScope() {
-        const s = scopeStore.scope;
-        if (!s) return;
-        let snap = null;
-        try {
-          snap = s.getSnapshot();
-        } catch (e) {
-          return;
-        }
-        const v = snap && snap.value || {};
-        wsStore.start({
-          backendUrl: typeof v.backendUrl === "string" ? v.backendUrl : "",
-          apiKey: typeof v.apiKey === "string" ? v.apiKey : ""
-        });
       }
       function PersonIcon({ size }) {
         return h(
@@ -360,21 +568,17 @@
         React.useEffect(() => panelStore.subscribe(() => setUnread(panelStore.unread)), []);
         return unread;
       }
-      function useWsOpen() {
-        const [open, setOpen] = React.useState(wsStore.isOpen());
-        React.useEffect(() => wsStore.subscribe(() => setOpen(wsStore.isOpen())), []);
-        return open;
-      }
       function MucheEntry({ wide }) {
         const open = usePanelOpen();
         const unread = useUnread();
+        const entryTitle = open ? "小沐面板已打开" : unread > 0 ? `小沐有 ${unread} 条未读` : "打开小沐";
         if (!wide) {
           return h(
             "button",
             {
               type: "button",
               onClick: () => panelStore.toggle(),
-              title: open ? "小沐面板已打开" : "打开小沐",
+              title: entryTitle,
               className: "muche-settings-entry",
               style: {
                 position: "relative",
@@ -403,7 +607,7 @@
           {
             type: "button",
             onClick: () => panelStore.toggle(),
-            title: open ? "小沐面板已打开" : unread > 0 ? `小沐有 ${unread} 条未读` : "打开小沐",
+            title: entryTitle,
             className: "muche-settings-entry",
             style: {
               position: "relative",
@@ -433,7 +637,9 @@
       }
       function ChatPanel() {
         const open = usePanelOpen();
-        const wsOpen = useWsOpen();
+        const runtime = useRuntime();
+        const problem = runtime.problem;
+        const contextKey = runtime.context ? runtime.context.runtimeId + ":" + runtime.context.generation : "";
         const [msgs, setMsgs] = React.useState([]);
         const [hasMore, setHasMore] = React.useState(false);
         const [olderCursor, setOlderCursor] = React.useState(null);
@@ -444,7 +650,7 @@
         const fileRef = React.useRef(null);
         const inputRef = React.useRef(null);
         const [loading, setLoading] = React.useState(false);
-        const [error, setError] = React.useState("");
+        const [inline, setInline] = React.useState(null);
         const [reachedStart, setReachedStart] = React.useState(false);
         const [quotaUntil, setQuotaUntil] = React.useState(0);
         const [pos, setPos] = React.useState(null);
@@ -455,24 +661,65 @@
         const bottomRef = React.useRef(null);
         const stickRef = React.useRef(true);
         const inflightRef = React.useRef(/* @__PURE__ */ new Set());
-        const timersRef = React.useRef(/* @__PURE__ */ new Map());
         const failedImgsRef = React.useRef(/* @__PURE__ */ new Set());
         const markImgFailed = (src) => {
           if (!src || failedImgsRef.current.has(src)) return;
           failedImgsRef.current.add(src);
           setMsgs(renderMerged(baseRef.current));
         };
-        const stuckNoticeRef = React.useRef(null);
+        const noticesRef = React.useRef(/* @__PURE__ */ new Map());
         const quotaUntilRef = React.useRef(0);
         const setQuota = (ms) => {
           quotaUntilRef.current = ms;
           setQuotaUntil(ms);
         };
-        const failureNotice = () => "⚠️ 这条消息暂时没处理完，请稍后重试";
-        const withSticky = (rows2) => stuckNoticeRef.current ? [...rows2, stuckNoticeRef.current] : rows2;
-        const stickNotice = (content, ts) => {
-          stuckNoticeRef.current = { role: "assistant", content, inner_thought: "", ts };
+        const failureNotice = () => ({ kind: "operation", text: "这条消息暂时没处理完，请稍后重试" });
+        const withSticky = (rows2) => {
+          const remaining = new Map(noticesRef.current);
+          const result = [];
+          for (const row of rows2) {
+            result.push(row);
+            const id = row.mid || row.delivery_id;
+            if (id && remaining.has(id)) {
+              result.push(remaining.get(id));
+              remaining.delete(id);
+            }
+          }
+          return [...result, ...remaining.values()];
         };
+        const stickNotice = (failure, ts, mid) => {
+          noticesRef.current.set(mid || "operation", { role: "system", content: failure.text, inner_thought: "", ts, notice: true, failure, mid });
+          if (noticesRef.current.size > 50) noticesRef.current.delete(noticesRef.current.keys().next().value);
+        };
+        const reportFailure = (fact, { operation = "request", ts, mid } = {}) => {
+          if (!fact || fact.stale || fact.code === STALE_RUNTIME) return;
+          const failure = classifyFailure(fact);
+          if (failure.kind === "quota") {
+            const until = Date.parse(fact.reset_at);
+            if (Number.isFinite(until) && until > Date.now()) setQuota(until);
+            return;
+          }
+          if (isSameProblem(failure, runtimeStore.getSnapshot().problem)) return;
+          if (operation === "message") {
+            stickNotice(failure, ts || (/* @__PURE__ */ new Date()).toISOString(), mid);
+            setMsgs(renderMerged(baseRef.current));
+          } else setInline({ ...failure, operation: failure.kind === "input" ? "input" : operation });
+        };
+        const previousProblemRef = React.useRef(null);
+        React.useEffect(() => {
+          const previous = previousProblemRef.current;
+          previousProblemRef.current = problem;
+          if (!previous || isSameProblem(previous, problem)) return;
+          setInline((current) => isSameProblem(current, previous) ? null : current);
+          let changed = false;
+          for (const [id, notice] of noticesRef.current) {
+            if (isSameProblem(notice.failure, previous)) {
+              noticesRef.current.delete(id);
+              changed = true;
+            }
+          }
+          if (changed) setMsgs(renderMerged(baseRef.current));
+        }, [problem]);
         const baseRef = React.useRef([]);
         const overlayRef = React.useRef([]);
         const overlaySeqRef = React.useRef(0);
@@ -524,24 +771,17 @@
           if (kept.length !== overlayRef.current.length) overlayRef.current = kept;
         };
         const handleHttpReply = (res, nowIso, mid) => {
+          if (res?.stale) return;
           settleInflight(mid);
-          if (res && !res.ok && res.code === "message_quota_exhausted") {
-            const until = Date.parse(res.reset_at);
-            if (Number.isFinite(until) && until > Date.now()) setQuota(until);
+          if (!res?.ok) {
+            reportFailure(res, { operation: "message", ts: nowIso, mid });
+            return;
           }
-          if (res && res.ok) {
-            const parts = (res.messages || []).map((t) => ({ role: "assistant", content: String(t), inner_thought: res.inner_thought || "", ts: nowIso }));
-            if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
-              stickNotice(failureNotice(), nowIso);
-              setMsgs(renderMerged(baseRef.current));
-            } else if (parts.length > 0) {
-              overlayAdd(parts);
-            }
-          } else {
-            const error2 = res && res.error ? res.error : "发送失败";
-            stickNotice("⚠️ " + error2, nowIso);
-            setMsgs(renderMerged(baseRef.current));
-          }
+          if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current));
+          const parts = (res.messages || []).map((t) => ({ role: "assistant", content: String(t), inner_thought: res.inner_thought || "", ts: nowIso }));
+          if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
+            reportFailure(failureNotice(), { operation: "message", ts: nowIso, mid });
+          } else if (parts.length > 0) overlayAdd(parts);
         };
         const normalize = (rows2) => (rows2 || []).map((m) => ({
           role: m.role === "user" ? "user" : "assistant",
@@ -557,41 +797,36 @@
         const pickFiles = (files) => {
           const list = Array.from(files || []);
           if (!list.length) return;
-          setError("");
+          setInline((current) => current?.operation === "input" ? null : current);
           const okTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
           for (const f of list) {
             if (pendingImages.length >= 3) {
-              setError("最多发 3 张图");
+              reportFailure({ kind: "input", text: "最多发 3 张图" });
               break;
             }
             if (okTypes.indexOf(f.type) < 0) {
-              setError("只支持 JPEG/PNG/GIF/WebP");
+              reportFailure({ kind: "input", text: "只支持 JPEG/PNG/GIF/WebP" });
               continue;
             }
             if (f.size > 8 * 1024 * 1024) {
-              setError("单张图最大 8M");
+              reportFailure({ kind: "input", text: "单张图最大 8M" });
               continue;
             }
             const reader = new FileReader();
+            const context = runtimeStore.context();
             reader.onload = () => {
+              if (context && !runtimeStore.accepts(context)) return;
               setPendingImages((prev) => prev.length >= 3 ? prev : [...prev, String(reader.result || "")]);
             };
             reader.readAsDataURL(f);
           }
         };
         const settleInflight = (mid) => {
-          if (mid) {
-            inflightRef.current.delete(mid);
-            const timer = timersRef.current.get(mid);
-            if (timer) {
-              clearTimeout(timer);
-              timersRef.current.delete(mid);
-            }
-          }
+          if (mid) inflightRef.current.delete(mid);
           if (inflightRef.current.size === 0) setThinking(false);
         };
         React.useEffect(() => {
-          const off = wsStore.subscribe((data) => {
+          const off = runtimeStore.subscribeFrames((data) => {
             const nowIso = typeof Date !== "undefined" ? (/* @__PURE__ */ new Date()).toISOString() : "";
             if (data.type === "proactive") {
               const parts = (data.messages || []).map((t) => ({
@@ -605,8 +840,9 @@
                 panelStore.bumpUnread();
               }
             } else if (data.type === "reply") {
-              if (data.duplicate) return;
               settleInflight(data.message_id);
+              if (data.duplicate) return;
+              if (noticesRef.current.delete(data.message_id)) setMsgs(renderMerged(baseRef.current));
               const parts = (data.messages || []).map((t) => ({
                 role: "assistant",
                 content: String(t),
@@ -614,10 +850,7 @@
                 ts: nowIso
               }));
               if (data.degraded && parts.length === 0 && !data.superseded && !data.waiting_for_decision) {
-                stickNotice(failureNotice(), nowIso);
-                setMsgs(renderMerged(baseRef.current));
-              } else if (data.degraded === false && parts.length === 0) {
-                overlayAdd([{ role: "assistant", content: "（没有回复）", inner_thought: "", ts: nowIso }]);
+                reportFailure(failureNotice(), { operation: "message", ts: nowIso, mid: data.message_id });
               } else if (parts.length > 0) {
                 overlayAdd(parts);
               }
@@ -625,14 +858,7 @@
               refreshNew();
             } else if (data.type === "error" && data.message_id && inflightRef.current.has(data.message_id)) {
               settleInflight(data.message_id);
-              if (data.code === "message_quota_exhausted") {
-                const until = Date.parse(data.reset_at);
-                if (Number.isFinite(until) && until > Date.now()) setQuota(until);
-              }
-              const hm = data.code === "message_quota_exhausted" ? localHM(data.reset_at) : "";
-              const text = hm ? "消息额度已用完，" + hm + " 后恢复" : "⚠️ " + (data.error || "处理失败");
-              stickNotice("⚠️ " + text, nowIso);
-              setMsgs(renderMerged(baseRef.current));
+              reportFailure(data, { operation: "message", ts: nowIso, mid: data.message_id });
             }
           });
           return off;
@@ -648,38 +874,34 @@
           const el = inputRef.current;
           if (el && typeof el.focus === "function") el.focus();
         }, [open, quotaUntil]);
-        const fetchNew = React.useCallback(() => {
-          return apiGet("/api/muche/history?limit=20").then(
-            (res) => res && res.ok ? { ok: true, error: "", messages: res.messages || [] } : { ok: false, error: String(res && res.error || "未知错误"), messages: [] },
-            () => ({ ok: false, error: "请求失败", messages: [] })
-          );
-        }, []);
+        const fetchNew = React.useCallback(() => runtimeRequest("/api/muche/history?limit=20"), []);
         const loadHistory = React.useCallback(() => {
-          return apiGet("/api/muche/history?limit=50").then((res) => {
-            if (res && res.ok) {
-              const page = normalize(res.messages);
-              baseRef.current = page;
-              reconcileOverlay();
-              setMsgs(renderMerged(page));
-              setHasMore(!!res.has_more);
-              setOlderCursor(typeof res.next_before === "string" && res.next_before ? res.next_before : null);
-              if (!res.has_more) setReachedStart(true);
-              setError("");
-              syncSeqRef.current += 1;
-              return true;
+          return runtimeRequest("/api/muche/history?limit=50").then((res) => {
+            if (res?.stale) return false;
+            if (!res?.ok) {
+              reportFailure(res, { operation: "history" });
+              return false;
             }
-            if (res && !res.ok && res.error) {
-              setError(res.error);
-            }
-            return false;
-          }).catch(() => false);
+            const page = normalize(res.messages);
+            baseRef.current = page;
+            reconcileOverlay();
+            setMsgs(renderMerged(page));
+            setHasMore(!!res.has_more);
+            setOlderCursor(typeof res.next_before === "string" && res.next_before ? res.next_before : null);
+            if (!res.has_more) setReachedStart(true);
+            setInline((current) => current?.operation === "history" ? null : current);
+            syncSeqRef.current += 1;
+            return true;
+          });
         }, []);
         const refreshNew = React.useCallback(() => {
           return fetchNew().then((delta) => {
+            if (delta?.stale) return false;
             if (!delta.ok) {
-              setError("刷新失败" + (delta.error ? "（" + delta.error.slice(0, 80) + "）" : ""));
+              reportFailure(delta, { operation: "history" });
               return false;
             }
+            setInline((current) => current?.operation === "history" ? null : current);
             const rows2 = normalize(delta.messages);
             if (rows2.length > 0) {
               const known = new Set(baseRef.current.map((m) => m.id));
@@ -701,39 +923,51 @@
             return true;
           });
         }, [fetchNew]);
+        const authFpRef = React.useRef("");
         React.useEffect(() => {
+          if (!contextKey) return;
+          if (authFpRef.current && authFpRef.current !== contextKey) {
+            baseRef.current = [];
+            overlayRef.current = [];
+            noticesRef.current.clear();
+            inflightRef.current.clear();
+            setMsgs([]);
+            setThinking(false);
+            setInline(null);
+            setInput("");
+            setPendingImages([]);
+            setQuota(0);
+            setHasMore(false);
+            setOlderCursor(null);
+            setReachedStart(false);
+            setLoadingOlder(false);
+            failedImgsRef.current.clear();
+            preserveRef.current = null;
+            if (olderTimerRef.current) {
+              clearTimeout(olderTimerRef.current);
+              olderTimerRef.current = null;
+            }
+          }
+          authFpRef.current = contextKey;
           if (!open) return;
+          let cancelled = false;
           setLoading(true);
           stickRef.current = true;
           setReachedStart(false);
           setOlderCursor(null);
-          loadHistory().then(() => setLoading(false));
-        }, [open]);
-        const authFpRef = React.useRef("");
-        React.useEffect(() => scopeStore.subscribe(() => {
-          let fp = "";
-          try {
-            const snap = scopeStore.scope && scopeStore.scope.getSnapshot();
-            const v = snap && snap.value || {};
-            fp = (v.backendUrl || "") + "|" + (v.apiKey || "");
-          } catch (e) {
-            return;
-          }
-          if (authFpRef.current && fp !== authFpRef.current) {
-            authFpRef.current = fp;
-            baseRef.current = [];
-            overlayRef.current = [];
-            stuckNoticeRef.current = null;
-            setMsgs([]);
-            setHasMore(false);
-            setReachedStart(false);
-            setOlderCursor(null);
-            setError("");
-            if (panelStore.open) loadHistory();
-          } else if (!authFpRef.current) {
-            authFpRef.current = fp;
-          }
-        }), [loadHistory]);
+          loadHistory().then(() => {
+            if (!cancelled) setLoading(false);
+          });
+          return () => {
+            cancelled = true;
+          };
+        }, [open, contextKey, loadHistory]);
+        const wasOnlineRef = React.useRef(false);
+        React.useEffect(() => {
+          const wasOnline = wasOnlineRef.current;
+          wasOnlineRef.current = runtime.phase === "online";
+          if (!wasOnline && runtime.phase === "online" && open) void refreshNew();
+        }, [runtime.phase, open, refreshNew]);
         const pinToBottom = () => {
           const anchor = bottomRef.current;
           if (!anchor) return;
@@ -766,6 +1000,9 @@
           }
         }, [msgs]);
         const olderTimerRef = React.useRef(null);
+        React.useEffect(() => () => {
+          if (olderTimerRef.current) clearTimeout(olderTimerRef.current);
+        }, []);
         const loadOlder = () => {
           if (loadingOlder || !hasMore && reachedStart) return;
           if (olderTimerRef.current) return;
@@ -784,7 +1021,8 @@
             preserveRef.current = { prevHeight, prevScrollTop };
             return;
           }
-          apiGet("/api/muche/history?limit=50" + (cursor ? "&before=" + encodeURIComponent(cursor) : "")).then((res) => {
+          runtimeRequest("/api/muche/history?limit=50" + (cursor ? "&before=" + encodeURIComponent(cursor) : "")).then((res) => {
+            if (res?.stale) return;
             if (res && res.ok) {
               const rows2 = normalize(res.messages);
               const known = new Set(baseRef.current.map((m) => m.id));
@@ -803,40 +1041,29 @@
               preserveRef.current = { prevHeight, prevScrollTop };
             } else {
               setLoadingOlder(false);
-              setError("加载更早的消息失败" + (res && res.error ? "（" + String(res.error).slice(0, 80) + "）" : ""));
+              if (res?.code === "CURSOR_INVALID") void loadHistory();
+              else reportFailure(res, { operation: "history" });
             }
           }, () => {
             setLoadingOlder(false);
-            setError("加载更早的消息失败（请求失败）");
+            reportFailure({ kind: "operation", text: "加载更早的消息失败，请重试" }, { operation: "history" });
           });
         };
         const send = () => {
           const text = input.trim();
           const images = pendingImages.slice(0, 3);
           if (!text && !images.length) return;
+          if (!runtimeStore.context()) return;
           if (quotaUntilRef.current > Date.now()) return;
           setInput("");
           setPendingImages([]);
-          stuckNoticeRef.current = null;
+          setInline((current) => current?.operation === "input" ? null : current);
           const nowIso = typeof Date !== "undefined" ? (/* @__PURE__ */ new Date()).toISOString() : "";
-          const mid = wsStore.newId("m");
+          const mid = runtimeStore.newId("m");
           overlayAdd([{ role: "user", content: text, inner_thought: "", ts: nowIso, previews: images, mid }]);
           setThinking(true);
           inflightRef.current.add(mid);
-          if (wsStore.isOpen()) {
-            if (wsStore.send({ type: "user_message", message_id: mid, message: text, images: images.length ? images : void 0 })) {
-              timersRef.current.set(mid, setTimeout(() => {
-                if (inflightRef.current.has(mid)) {
-                  settleInflight(mid);
-                  stickNotice("⚠️ 回复超时,请重试", nowIso);
-                  setMsgs(renderMerged(baseRef.current));
-                }
-              }, 9e4));
-              if (inputRef.current && typeof inputRef.current.focus === "function") inputRef.current.focus();
-              return;
-            }
-          }
-          apiPost("/api/muche/chat", { text, message_id: mid, images: images.length ? images : void 0 }).then((res) => handleHttpReply(res, nowIso, mid));
+          runtimeRequest("/api/muche/chat", { text, message_id: mid, images: images.length ? images : void 0 }).then((res) => handleHttpReply(res, nowIso, mid));
           if (inputRef.current && typeof inputRef.current.focus === "function") inputRef.current.focus();
         };
         const bubble = (m, i, showTime) => {
@@ -911,6 +1138,11 @@
         const rows = [];
         for (let i = 0; i < msgs.length; i++) {
           const m = msgs[i];
+          if (m.notice && isSameProblem(m.failure, problem)) continue;
+          if (m.notice) {
+            rows.push(h("div", { key: "notice-" + i, role: "status", style: { fontSize: 12, color: "var(--dsw-alias-state-error-primary)", marginBottom: 8 } }, "⚠ " + m.content));
+            continue;
+          }
           const key = m && (m.overlayKey || m.id) || i;
           let showTime = false;
           if (i === 0) showTime = true;
@@ -981,19 +1213,20 @@
               }
             },
             h("span", { style: { fontSize: 15, fontWeight: 600, color: "var(--dsw-alias-label-primary)" } }, "小沐"),
+            // The title consumes the synchronized runtime projection, never bridge state.
             h("span", {
+              title: runtime.phase === "online" ? "能和小沐聊天" : runtime.phase === "connecting" ? "正在建立聊天连接" : "当前聊天连接不可用",
               style: {
                 display: "inline-block",
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: wsOpen ? "#52c41a" : "#fa8c16"
+                background: runtime.phase === "online" ? "var(--dsw-alias-state-success-primary, #52c41a)" : runtime.phase === "connecting" ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-state-error-primary)"
               }
             }),
             h("span", {
-              style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" },
-              title: [wsStore.lastError, wsStore.diagSummary, wsVia()].filter(Boolean).join("；") || ""
-            }, wsOpen ? "在线" : "实时通道未连接" + (wsStore.lastError ? "：" + wsStore.lastError : "") + (wsStore.diagSummary ? "；" + wsStore.diagSummary : "") + wsViaSuffix()),
+              style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" }
+            }, runtime.label),
             h("button", {
               type: "button",
               onClick: () => panelStore.close(),
@@ -1001,6 +1234,26 @@
               style: { marginLeft: "auto", cursor: "pointer", background: "none", border: "none", color: "var(--dsw-alias-label-secondary)", fontSize: 16, padding: "2px 6px" }
             }, "×")
           ),
+          // Structural faults remain outside the scrollable message list.
+          problem ? h(
+            "div",
+            {
+              style: {
+                padding: "8px 14px",
+                flex: "none",
+                borderBottom: "1px solid var(--dsw-alias-border-l2)",
+                fontSize: 12,
+                lineHeight: "18px",
+                // config 与 bridge 都是故障（横幅只在故障态渲染），一律错误色。
+                // 此前清理废三元时把这个色值一起去掉了，变成普通正文色，看着
+                // 不像告警。颜色是唯一区分「这是提示」与「这是故障」的信号。
+                color: "var(--dsw-alias-state-error-primary)",
+                background: "var(--dsw-alias-bg-base)"
+              }
+            },
+            h("div", { role: "alert" }, "⚠ " + problem.text),
+            problem.advice ? h("div", { style: { marginTop: 2, color: "var(--dsw-alias-label-secondary)" } }, problem.advice) : null
+          ) : null,
           h(
             "div",
             { ref: listRef, onScroll: onListScroll, style: { flex: 1, overflowY: "auto", padding: 12 } },
@@ -1014,7 +1267,8 @@
                 style: { cursor: "pointer", background: "none", border: "none", fontSize: 12, color: "var(--dsw-alias-label-secondary)" }
               }, loadingOlder ? "加载中…" : "查看更早的消息")
             ) : null,
-            error ? h("div", { style: { fontSize: 13, color: "var(--dsw-alias-state-error-primary)" } }, "⚠️ " + error) : null,
+            // An unrelated input/operation notice must not be swallowed by a bridge fault.
+            inline && !isSameProblem(inline, problem) ? h("div", { role: "status", style: { fontSize: 13, color: "var(--dsw-alias-state-error-primary)" } }, "⚠ " + inline.text) : null,
             loading ? h("div", { style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, "加载中…") : null,
             rows,
             h("div", { ref: bottomRef, style: { height: 1 } })
@@ -1130,8 +1384,17 @@
         const [saving, setSaving] = React.useState(false);
         const dirtyRef = React.useRef(false);
         const revRef = React.useRef(void 0);
+        const testControllerRef = React.useRef(null);
         const scope = useScope();
+        const invalidateTest = () => {
+          testControllerRef.current?.abort();
+          testControllerRef.current = null;
+          setTesting(false);
+          setStatus("");
+        };
         React.useEffect(() => {
+          dirtyRef.current = false;
+          invalidateTest();
           if (!scope) return void 0;
           const pull = () => {
             if (dirtyRef.current) return;
@@ -1150,13 +1413,18 @@
             revRef.current = snap ? snap.revision : void 0;
           };
           pull();
-          return scope.subscribe(pull);
+          const off = scope.subscribe(pull);
+          return () => {
+            off();
+            testControllerRef.current?.abort();
+          };
         }, [scope]);
         const save = () => {
           if (!scope) {
             setStatus("设置服务未就绪，稍后再试");
             return;
           }
+          invalidateTest();
           setSaving(true);
           setStatus("");
           const ops = [];
@@ -1166,29 +1434,28 @@
           Promise.resolve().then(() => scope.mutate(ops, revRef.current)).then(() => {
             setSaving(false);
             dirtyRef.current = false;
-            setStatus("✓ 已保存(仅存本机 dsh 配置)");
+            revRef.current = scope.getSnapshot()?.revision;
+            setStatus("✓ 已保存");
           }).catch((e) => {
             setSaving(false);
             dirtyRef.current = false;
-            setStatus("保存失败:" + (e && e.message ? String(e.message).slice(0, 200) : "未知错误"));
+            console.warn("muche settings: save rejected", String(e?.code || e?.name || "Error"));
+            revRef.current = scope.getSnapshot()?.revision;
+            setStatus(classifyFailure({ kind: "config" }).text);
           });
         };
         const test = () => {
+          invalidateTest();
+          const controller = new AbortController();
+          testControllerRef.current = controller;
           setTesting(true);
-          setStatus("");
-          if (missingApiSuffix(backendUrl)) {
-            setStatus("地址可能少了 /api 后缀：远端请填 https://公网地址/api（仍为你测试连接）");
-          }
-          apiPost("/api/muche/health", { backendUrl: backendUrl.trim(), apiKey: apiKey.trim() }).then((res) => {
+          apiPost("/api/muche/health", { backendUrl: backendUrl.trim(), apiKey: apiKey.trim() }, { signal: controller.signal }).then((res) => {
+            if (controller.signal.aborted || testControllerRef.current !== controller) return;
+            testControllerRef.current = null;
             setTesting(false);
-            const auth = res && res.auth;
-            const history = res && res.history;
-            if (res && res.ok && auth && auth.ok) {
-              setStatus("✓ 连接成功:user_id=" + auth.userId + (history && history.ok ? "（历史通）" : "（历史：" + (history && history.error || "不可读") + "）"));
-            } else {
-              const seg = auth && !auth.ok ? "鉴权：" + auth.error : history && !history.ok ? "历史：" + history.error : "未知错误";
-              setStatus("连接失败：" + seg);
-            }
+            const auth = res?.auth, history = res?.history;
+            if (res?.ok && auth?.ok && history?.ok) setStatus("✓ 配置验证通过");
+            else setStatus(classifyFailure(auth && !auth.ok ? auth : history && !history.ok ? history : res || {}).text);
           });
         };
         const row = (label, node) => h(
@@ -1212,15 +1479,13 @@
             h("input", {
               className: "muche-field",
               value: backendUrl,
-              placeholder: "填 https://公网地址/api（/api 后缀必填）",
+              placeholder: "填小沐后端地址",
               onChange: (e) => {
+                invalidateTest();
                 dirtyRef.current = true;
                 setBackendUrl(e.target.value);
               }
-            }),
-            missingApiSuffix(backendUrl) ? h("div", {
-              style: { fontSize: 12, marginTop: 6, color: "var(--dsw-alias-state-error-primary)" }
-            }, "地址少了 /api 后缀：远端请填 https://公网地址/api，否则只会收到网页、报响应解析失败") : null
+            })
           )),
           row("API key", h(
             "div",
@@ -1231,6 +1496,7 @@
               type: showKey ? "text" : "password",
               placeholder: "muche_…(在小沐后台生成)",
               onChange: (e) => {
+                invalidateTest();
                 dirtyRef.current = true;
                 setApiKey(e.target.value);
               },
@@ -1285,23 +1551,24 @@
         if (slots === void 0) throw new Error(`muche-dsh-plugin: required service "slots" is missing (declare inject: ['slots', 'configForms'])`);
         const configForms = ctx.get("configForms");
         if (configForms === void 0 || typeof configForms.get !== "function") throw new Error(`muche-dsh-plugin: required service "configForms" is missing (declare inject: ['slots', 'configForms'])`);
-        apiGet("/api/muche/health").then((res) => {
-          const ns = res && res.ok && typeof res.configNs === "string" && res.configNs ? res.configNs : "muche";
-          scopeStore.set(configForms.get(ns));
-        }).catch(() => {
-          scopeStore.set(configForms.get("muche"));
+        const offBinding = runtimeStore.subscribe((value) => {
+          const ns = value.context?.configNs;
+          if (ns && scopeStore.namespace !== ns) {
+            scopeStore.namespace = ns;
+            scopeStore.set(configForms.get(ns));
+          }
         });
-        const offScope = scopeStore.subscribe(syncWsFromScope);
-        const selfHealTimer = setInterval(() => wsStore.ensureConnected(), 3e4);
         const onVisible = () => {
-          if (document.visibilityState === "visible") wsStore.ensureConnected();
+          if (document.visibilityState === "visible") runtimeStore.ensureConnected();
         };
         document.addEventListener("visibilitychange", onVisible);
         ctx.on("dispose", () => {
-          offScope();
-          clearInterval(selfHealTimer);
+          offBinding();
+          runtimeStore.dispose();
           document.removeEventListener("visibilitychange", onVisible);
+          document.querySelector('style[data-plugin="muche-dsh-plugin"]')?.remove();
         });
+        runtimeStore.start();
         slots.inject("sidebar.footer.action", () => slots.register(
           { name: "sidebar.footer.action", id: "muche-entry", order: 10, label: "小沐" },
           (props) => h(MucheEntry, { wide: props ? props.wide !== false : true })

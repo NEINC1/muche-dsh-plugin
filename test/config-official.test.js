@@ -99,12 +99,18 @@ test('入口导出 Config（loader 读 runtime.Config 做 schema 源）', () => 
   assert.ok(/export\s*\{\s*Config\s*\}/.test(INDEX_SRC), 'index 未导出 Config')
 })
 
-test('入口 apply 收 config 并订阅官方变更事件刷桥', () => {
+test('入口 apply 用一条官方变更事件同时换 HTTP、接收与桥接，且不残留旧全局刷新口', () => {
   assert.ok(/export function apply\(ctx,\s*config\)/.test(INDEX_SRC), 'apply 未收 config')
-  assert.ok(/loader\/volatile-update/.test(INDEX_SRC), '未订阅 loader/volatile-update')
-  const sub = INDEX_SRC.match(/ctx\.on\('loader\/volatile-update', \(\) => \{([\s\S]*?)\}\)/)
-  assert.ok(sub, 'volatile-update 订阅体缺失')
-  assert.ok(/requestDshBridgeRefresh/.test(sub[1]), '变更后未触发桥 refresh')
+  const handler = INDEX_SRC.match(/ctx\.on\('loader\/volatile-update', \(\) => \{([\s\S]*?)\n {2}\}\)/)
+  assert.ok(handler, '未订阅 loader/volatile-update')
+  for (const owner of ['runtime.configure', 'hub.configure', 'bridge.refresh']) {
+    assert.ok(handler[1].includes(owner), `配置变更未驱动 ${owner}`)
+  }
+  // 三个下游必须读到同一次读取的同一份配置与同一 context（代际一致）。
+  const reads = handler[1].match(/readConfig\(config\)/g) || []
+  assert.equal(reads.length, 1, '同一次配置变更不得多次读取配置快照')
+  assert.ok(/const context = runtime\.context\(\)/.test(handler[1]), '未取当前 context')
+  assert.ok(!/requestDshBridgeRefresh/.test(INDEX_SRC), '入口不得再走独立全局刷新口（配置驱动只有一条）')
 })
 
 test('旧契约零残留：源码无 register/get/自建 config 路由', () => {

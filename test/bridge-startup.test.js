@@ -1,25 +1,4 @@
-/**
- * bridge-startup.test.js — 0.4.3 启动根治回归（2026-09-23 桌面端事故）。
- *
- * 根因两条（同进程内）：
- * ① 双挂载（bundles #muche + 市场 #mkt-muche）第二份 apply 撞
- *    `duplicate exact route` 直接抛 → 后继 registerDshBridge 永不执行 →
- *    面板走孤儿路由、桥不存在。治本：撞车降级（副纤程跳过桥接），
- *    主纤程唯一执行，非撞车错误照常抛。
- * ② 依赖检查在 apply 时刻一判终身：宿主行异步挂载，桌面端启动顺序竞态
- *    致静默丢桥（仅 console.warn 到虚空）。治本：检查推迟到每次 refresh，
- *    缺失时有界自愈（5s/15s/30s，unref），状态经 getDshBridgeStatus 可见。
- *
- * 覆盖：
- *  - guard：撞重复吞掉记降级；非撞车原样抛；成功 true；
- *  - 双 apply：第二份不抛、degraded=true、首份路由保留；
- *  - /api/muche/health：含 configNs＋桥 fibers 数组形状（旧 /status 已删）；
- *  - 缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖 + refresh 即上线；
- *  - 缺依赖且永不补：有界重试不 hanging（unref），dispose 干净。
- *
- * 用本地 WebSocketServer 做后端，全程无真实 dsh。
- * 启停顺序：先停客户端（dispose）再关 server，反之互相等死。
- */
+/** Route ownership and bridge startup use a fake host/local backend, never live configuration. */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
@@ -28,6 +7,7 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 import { createRegistrationGuard } from '../lib/register-guard.js'
+import { BRIDGE_DEPENDENCIES } from '../lib/errors.js'
 import { registerRoutes } from '../lib/routes.js'
 import { registerPanelEvents } from '../lib/panel-events.js'
 import { registerDshBridge, requestDshBridgeRefresh, getDshBridgeStatus } from '../lib/dsh-bridge.js'
@@ -126,17 +106,27 @@ async function startFakeBackend() {
   const conns = []
   const wss = new WebSocketServer({ port: 0 })
   await new Promise((resolve) => wss.on('listening', resolve))
-  wss.on('connection', (sock, req) => conns.push({ sock, url: req.url || '' }))
+  wss.on('connection', (sock, req) => {
+    conns.push({ sock, url: req.url || '' })
+    sock.send(JSON.stringify({ type: 'hello' }))
+    // 真实后端行为：收到 dsh_hello 即回登记确认。
+    sock.on('message', (raw) => {
+      let frame
+      try { frame = JSON.parse(String(raw)) } catch { return }
+      if (frame?.type === 'dsh_hello') {
+        sock.send(JSON.stringify({ type: 'dsh_hello_ack', ok: true, host_id: frame.host_id, protocol: frame.protocol }))
+      }
+    })
+  })
   return {
     url: `http://127.0.0.1:${wss.address().port}`,
     conns,
     waitConn(ms = 5000) {
       if (conns.length) return Promise.resolve(conns[conns.length - 1])
       return new Promise((resolve, reject) => {
-        const iv = setInterval(() => {
-          if (conns.length) { clearInterval(iv); resolve(conns[conns.length - 1]) }
-        }, 20)
-        setTimeout(() => { clearInterval(iv); reject(new Error('桥接未上线')) }, ms)
+        const connected = () => { clearTimeout(timeout); resolve(conns[conns.length - 1]) }
+        const timeout = setTimeout(() => { wss.off('connection', connected); reject(new Error('桥接未上线')) }, ms)
+        wss.once('connection', connected)
       })
     },
     async close() { await new Promise((resolve) => wss.close(resolve)) },
@@ -181,8 +171,8 @@ test('双 apply：第二份不抛、degraded=true、首份路由保留', () => {
 
 test('index 接线：副纤程跳过桥接，主纤程唯一执行', () => {
   assert.ok(/guard\.degraded/.test(INDEX_SRC), 'index 未凭 guard.degraded 分流主副纤程')
-  assert.ok(/registerDshBridge\(ctx, config\)/.test(INDEX_SRC), 'index 未注册桥接')
-  assert.ok(INDEX_SRC.indexOf('guard.degraded') < INDEX_SRC.indexOf('registerDshBridge(ctx, config)'),
+  assert.ok(/registerDshBridge\(ctx, config(?:,|\))/.test(INDEX_SRC), 'index 未注册桥接')
+  assert.ok(INDEX_SRC.indexOf('guard.degraded') < INDEX_SRC.indexOf('registerDshBridge(ctx, config'),
     '桥接注册应在降级判断之后')
 })
 
@@ -207,18 +197,23 @@ test('/api/muche/health：含 configNs＋桥 fibers 数组形状（旧 /status �
   assert.ok(Array.isArray(body.status.fibers), 'health.status.fibers 不是数组')
 })
 
-test('缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖+refresh 即上线', async () => {
+test('缺依赖启动保持 starting 静默；补依赖+全局诊断 refresh 即上线', async () => {
   const backend = await startFakeBackend()
   const ctx = bridgeCtx({ backendUrl: backend.url, withDeps: false })
+  let timeout
   try {
-    registerDshBridge(ctx, ctx._config)
-    await new Promise((r) => setTimeout(r, 400))
+    let ready
+    const readiness = new Promise((resolve) => { ready = resolve })
+    const bridge = registerDshBridge(ctx, ctx._config, {
+      dependencyRetryDelays: [10, 20],
+      onState: (state) => { if (state.phase === 'ready') ready() },
+    })
     assert.equal(backend.conns.length, 0)
-    let st = getDshBridgeStatus()
-    let mine = st.fibers[st.fibers.length - 1]
-    assert.equal(mine.mode, 'disabled')
-    assert.match(mine.reason, /sessionController/)
-    // 宿主行随后挂载（桌面端异步挂载窗口）：补上 + 重存配置即自愈。
+    const initial = bridge.getState()
+    assert.equal(initial.phase, 'starting')
+    assert.equal(initial.startupComplete, false)
+    assert.equal(initial.reason, '')
+    assert.equal(initial.deps.sessionController, false)
     ctx.workspaceRegistry = {
       resolveByPath: async () => undefined,
       create: async () => ({ id: 'ws-1' }),
@@ -227,23 +222,30 @@ test('缺依赖启动：不起连接、状态 disabled 含缺失项；补依赖+
     await requestDshBridgeRefresh()
     const conn = await backend.waitConn()
     assert.match(conn.url, /channel=dsh-bridge/)
-    st = getDshBridgeStatus()
-    mine = st.fibers[st.fibers.length - 1]
-    assert.equal(mine.mode, 'active')
+    await Promise.race([readiness, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('未收到真实 hello')), 2000) })])
+    assert.equal(bridge.getState().phase, 'ready')
+    assert.equal(bridge.getState().startupComplete, true)
+    assert.ok(getDshBridgeStatus().fibers.some((fiber) => fiber.phase === 'ready'))
   } finally {
+    clearTimeout(timeout)
     await shutdownBridge(ctx, backend)
   }
 })
 
-test('缺依赖且永不补：有界重试后安静，dispose 干净无残留', async () => {
-  const backend = await startFakeBackend()
-  const ctx = bridgeCtx({ backendUrl: backend.url, apiKey: 'k-nodeps', withDeps: false })
-  registerDshBridge(ctx, ctx._config)
-  await new Promise((r) => setTimeout(r, 400))
-  assert.equal(backend.conns.length, 0)
-  const mine = getDshBridgeStatus().fibers.length
-  await shutdownBridge(ctx, backend)
-  assert.equal(getDshBridgeStatus().fibers.length, mine - 1)
+test('缺依赖且永不补：有界等待耗尽才 fault，dispose 干净无残留', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const ctx = bridgeCtx({ backendUrl: 'http://example.test/api', apiKey: 'test-nodeps', withDeps: false })
+  const bridge = registerDshBridge(ctx, ctx._config, { dependencyRetryDelays: [5, 10, 20] })
+  assert.equal(bridge.getState().phase, 'starting')
+  for (const delay of [5, 10, 20]) t.mock.timers.tick(delay)
+  assert.equal(bridge.getState().phase, 'fault')
+  assert.equal(bridge.getState().startupComplete, true)
+  assert.equal(bridge.getState().code, BRIDGE_DEPENDENCIES)
+  const count = getDshBridgeStatus().fibers.length
+  await shutdownBridge(ctx)
+  assert.equal(getDshBridgeStatus().fibers.length, count - 1)
+  t.mock.timers.tick(60000)
+  assert.equal(bridge.getState().phase, 'stopped')
 })
 
 test('卸载清理：live-remove 后路由释放，重装不再撞车', () => {
