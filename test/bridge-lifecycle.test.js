@@ -327,7 +327,7 @@ test('dispose 清依赖 timer/事件/global fiber；迟到 identity 不接线', 
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const before = getDshBridgeStatus().fibers.length
   const waiting = fixture(t, { withDeps: false })
-  assert.equal(waiting.listeners.size, 3)
+  assert.equal(waiting.listeners.size, 4)
   waiting.bridge.dispose(); waiting.bridge.dispose()
   assert.equal(waiting.listeners.size, 0)
   const count = waiting.observations.length

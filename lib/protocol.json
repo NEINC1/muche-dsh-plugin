@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "capabilities": ["receipts", "session-query", "interactive-v2", "turn-origin"],
+  "capabilities": ["receipts", "session-query", "interactive-v2", "turn-origin", "native-observation"],
   "errors": {
     "turn_pending": "原任务尚未进入自己的执行轮次，追加仍在等待受理",
     "session_missing": "会话不存在，可能已被删除；旧会话已失效",

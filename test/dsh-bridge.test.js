@@ -8,8 +8,10 @@ import { join } from 'node:path'
 import { WebSocketServer } from 'ws'
 import { registerDshBridge } from '../lib/dsh-bridge.js'
 import { createRuntimeState } from '../lib/runtime-state.js'
+import { apply as applyNativeAskUser } from '@deepseek-ai/dsh-tool-ask-user'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
-async function fixture() {
+async function fixture({ timed = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'muche-host-'))
   const listeners = new Set(), disposers = [], waterfall = {}, prompts = [], frames = [], connections = []
   const wss = new WebSocketServer({ port: 0 })
@@ -29,6 +31,10 @@ async function fixture() {
     ws.send(JSON.stringify({ type: 'hello' }))
   })
   const emit = (type, data) => { for (const fn of [...listeners]) fn({ id: 'session' }, { type, data }) }
+  let questionTool
+  applyNativeAskUser({ tools: { register: (tool) => { questionTool = tool } } }, timed ? { mode: 'timed' } : {})
+  const submitted = []
+  const nativeQuestions = { attachWait: async function* () { yield { remainingMs: 15 } }, answer: (_agent, _callId, answer) => { submitted.push(answer); return true } }
   const controller = {
     create: async () => ({ sessionId: 'session' }),
     inspect: async (id) => { if (id !== 'session') throw Object.assign(new Error('deleted'), { code: 'session/not-found' }); return { sessionId: id } },
@@ -39,7 +45,7 @@ async function fixture() {
     },
   }
   const ctx = {
-    get: (name) => name === 'sessionController' ? controller : name === 'workspaceRegistry' ? { resolveByPath: async () => ({ id: 'workspace' }) } : name === 'agents' ? { get: (sid) => sid === 'session' ? { steer: (message) => { prompts.push({ mode: 'steer', sessionId: sid, content: message.content, requestId: message.source.rpcId }) } } : undefined } : undefined,
+    get: (name) => name === 'userQuestions' ? nativeQuestions : name === 'tools' ? { get: () => questionTool } : name === 'sessionController' ? controller : name === 'workspaceRegistry' ? { resolveByPath: async () => ({ id: 'workspace' }) } : name === 'agents' ? { get: (sid) => sid === 'session' ? { steer: (message) => { prompts.push({ mode: 'steer', sessionId: sid, content: message.content, requestId: message.source.rpcId }) } } : undefined } : undefined,
     on: (name, fn) => {
       if (name === 'session/event') { listeners.add(fn); return () => listeners.delete(fn) }
       if (name === 'dispose') disposers.push(fn)
@@ -72,8 +78,78 @@ async function fixture() {
   }
   const start = async (extra = {}) => { send({ type: 'dsh_task', task_id: 'task', run_id: 'run', task: 'work', ...extra }); await find('dsh_task_started', (frame) => frame.task_id === (extra.task_id || 'task')) }
   const finish = () => { emit('assistant/message', { turn: 1, message: { content: [{ type: 'text', text: 'done' }] } }); emit('turn/end', { turn: 1, reason: { kind: 'completed' } }) }
-  return { frames, connections, send, find, findIn, switchConfig, wait, start, finish, emit, waterfall, prompts, controller, bridge, runtime, listeners, close: async () => { for (const fn of disposers) fn(); runtime.dispose(); for (const connection of connections) connection.socket.close(); await new Promise((r) => wss.close(r)); rmSync(directory, { recursive: true, force: true }) } }
+  return { frames, connections, send, find, findIn, switchConfig, wait, start, finish, emit, waterfall, prompts, controller, bridge, runtime, listeners, submitted, close: async () => { for (const fn of disposers) fn(); runtime.dispose(); for (const connection of connections) connection.socket.close(); await new Promise((r) => wss.close(r)); rmSync(directory, { recursive: true, force: true }) } }
 }
+
+test('timed question remains answerable and the owned result waits for the admitted reply turn', async () => {
+  const f = await fixture({ timed: true })
+  try {
+    await f.start()
+    const questions = [{ id: 'choice', question: 'choose', options: [{ label: 'A' }] }]
+    const timeout = f.waterfall['user-questions/request']({ agent: { id: 'session' }, questions, wait: { callId: 'native-call', timed: true } }, () => 'other').catch((e) => e.code)
+    const up = await f.find('dsh_interactive')
+    assert.equal(up.payload.callId, 'native-call')
+    assert.equal(await timeout, 'ASK_TIMED_OUT')
+    f.emit('tool/result', { turn: 1, message: { toolCallId: 'native-call', content: [{ type: 'text', text: '{"pending":true}' }] } })
+    f.emit('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    assert.equal(f.frames.some((x) => x.type === 'dsh_result'), false)
+    f.send({ type: 'dsh_decide', command_id: 'late-answer', run_id: 'run', interactive_id: up.interactive_id, answer: { answers: [{ id: 'choice', selected: ['A'], custom: null }] } })
+    assert.equal((await f.find('dsh_decide_result')).stage, 'validated_submitted')
+    assert.deepEqual(f.submitted, [{ answers: [{ id: 'choice', selected: ['A'] }] }])
+    assert.equal(f.frames.some((x) => x.type === 'dsh_interactive_result'), false)
+    f.emit('turn/start', { turn: 2 })
+    f.emit('user/message', { source: { kind: 'user-question-reply', callId: 'native-call', outcome: 'answered' } })
+    assert.equal((await f.find('dsh_interactive_result')).stage, 'native_observed')
+    f.emit('assistant/message', { turn: 2, message: { content: [{ type: 'text', text: 'actual final result' }] } })
+    f.emit('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    assert.equal((await f.find('dsh_result')).reply, 'actual final result')
+  } finally { await f.close() }
+})
+
+test('model optional null is normalized before the real native answer output', async () => {
+  const f = await fixture()
+  try {
+    await f.start()
+    const questions = [{ id: 'tier', question: 'choose', options: [{ label: 'first' }], multiSelect: false }]
+    const pending = f.waterfall['user-questions/request']({ agent: { id: 'session' }, questions }, () => 'other')
+    const up = await f.find('dsh_interactive')
+    f.send({ type: 'dsh_decide', command_id: 'nullable-answer', run_id: 'run', interactive_id: up.interactive_id,
+      answer: { answers: [{ id: 'tier', selected: ['first'], custom: null }] } })
+    const received = await pending
+    let nativeTool
+    applyNativeAskUser({ tools: { register: (tool) => { nativeTool = tool } }, userQuestions: { ask: async () => received } })
+    const value = await nativeTool.execute({ questions: [{ id: 'tier', question: 'choose', options: [{ label: 'first' }] }] }, {})
+    assert.deepEqual(validateJsonSchemaValue(nativeTool.output.schema, value, 'value'), [])
+    assert.equal(Object.hasOwn(value.answers[0], 'custom'), false, 'native optional custom must be absent, not null')
+    assert.deepEqual(value, { answers: [{ id: 'tier', selected: ['first'] }] })
+    f.finish()
+  } finally { await f.close() }
+})
+
+test('approval carries the actual action and native failure proof replays with the original task', async () => {
+  const f = await fixture()
+  try {
+    await f.start()
+    const arguments_ = { command: 'Remove-Item C:\\Temp\\cache' }
+    f.emit('tool/call', { callId: 'approved-action', arguments: arguments_ })
+    const answer = f.waterfall['approval/request']({ agent: { id: 'session' }, callId: 'approved-action', toolName: 'shell', reason: 'remove cache' }, () => 'other')
+    const up = await f.find('dsh_interactive')
+    assert.deepEqual(up.payload.arguments, arguments_)
+    assert.equal(up.payload.toolName, 'shell')
+    f.send({ type: 'dsh_decide', command_id: 'approval-command', run_id: 'run', interactive_id: up.interactive_id, outcome: 'allowed-once' })
+    assert.equal(await answer, 'allowed-once')
+    assert.equal((await f.find('dsh_decide_result')).stage, 'validated_submitted')
+    assert.equal(f.frames.some((x) => x.type === 'dsh_interactive_result'), false)
+    f.emit('tool/result', { message: { toolCallId: 'approved-action', isError: true, content: [{ type: 'text', text: 'permission denied' }] } })
+    const observed = await f.find('dsh_interactive_result')
+    assert.equal(observed.stage, 'native_observed')
+    assert.equal(observed.ok, false)
+    f.send({ type: 'dsh_session_query', command_id: 'original-query', task_id: 'task' })
+    await f.wait(() => f.frames.filter((x) => x.type === 'dsh_interactive_result').length === 2)
+    assert.deepEqual(f.frames.filter((x) => x.type === 'dsh_interactive_result')[1], observed)
+    f.finish()
+  } finally { await f.close() }
+})
 
 test('hello, admission and final result are separate authoritative observations', async () => {
   const f = await fixture()
@@ -86,7 +162,7 @@ test('hello, admission and final result are separate authoritative observations'
     assert.ok(!f.frames.some((x) => x.type === 'dsh_result'))
     f.finish()
     assert.equal((await f.find('dsh_result')).reply, 'done')
-    assert.equal(f.listeners.size, 0)
+    assert.equal(f.listeners.size, 1)
   } finally { await f.close() }
 })
 
@@ -132,7 +208,7 @@ test('missing session retains upstream code and admission certainty', async () =
     f.controller.prompt = async () => { throw Object.assign(new Error('deleted'), { code: 'session/not-found' }) }
     f.send({ type: 'dsh_task', task_id: 'task', run_id: 'run', session_id: 'gone', task: 'work' })
     const result = await f.find('dsh_result')
-    assert.equal(result.code, 'session_missing'); assert.equal(result.source_code, 'session/not-found'); assert.equal(result.admitted, false); assert.equal(f.listeners.size, 0)
+    assert.equal(result.code, 'session_missing'); assert.equal(result.source_code, 'session/not-found'); assert.equal(result.admitted, false); assert.equal(f.listeners.size, 1)
   } finally { await f.close() }
 })
 
@@ -332,7 +408,7 @@ test('真实 WS 悬挂 prompt 忽略 abort 不锁 B 启动，迟到 A admission/
     await f.wait(() => !!releasePrompt)
     const b = await f.switchConfig({ apiKey: 'test-key-b' })
     assert.equal(f.bridge.getState().phase, 'ready')
-    assert.equal(f.listeners.size, 0)
+    assert.equal(f.listeners.size, 1)
     assert.ok(!b.frames.some((frame) => frame.type === 'dsh_task_started' && frame.task_id === taskId))
     releasePrompt()
     await new Promise((resolve) => setImmediate(resolve))

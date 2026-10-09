@@ -316,7 +316,7 @@ window.__ModuleLoader__.load({
       }
 
       const normalize = (rows) => (rows || []).map((m) => ({
-        role: m.role === 'user' ? 'user' : 'assistant',
+        role: m.role === 'system' ? 'system' : m.role === 'user' ? 'user' : 'assistant',
         content: m.content || '',
         inner_thought: m.inner_thought || '',
         ts: m.created_at || '',
@@ -666,7 +666,9 @@ window.__ModuleLoader__.load({
           const gap = gapMinutes(msgs[i - 1].ts, m.ts)
           if (gap === null || gap > 2) showTime = true
         }
-        rows.push(bubble(m, key, showTime))
+        if (m.role === 'system') {
+          rows.push(h('div', { key, role: 'status', style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 8 } }, m.content))
+        } else rows.push(bubble(m, key, showTime))
       }
 
       if (!open) return null

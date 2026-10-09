@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。插件版本见 `package.json` 的 `version`（0.7.0 起使用桥接协议 v2），dsh 本体须为上游锁定的 `0.1.7-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`^0.1.7`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级是同一条命令（重跑即升到最新版）。插件版本见 `package.json` 的 `version`（0.7.0 起使用桥接协议 v2），dsh 本体须为上游锁定的 `0.2.0-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`0.2.0-rc.2`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -85,17 +85,17 @@ dsh plugin remove 'muche-dsh-plugin'
 
 反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力，后端以 `dsh_hello_ack` 确认登记成功与否（成功带 `host_id` 回显，失败带已有枚举 `code` 且不登记）；插件只认该 ACK 为登记事实，不以 socket hello 或本地 ready 代替，未收到 ACK 前保持 starting。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。会话不存在保留具体上游事实，由小沐说明并按剩余任务续接新会话；失效的 `sN` 不再复用。断连与未知结果保留受理确定性，不据此重做副作用任务；重启恢复先只读查询原 task。
 
-在途追加只在相同 live run 的自有 turn 使用公开 `Agent.steer`，用同 cohort 的 `createUserMessage` 构造消息并同步受理；原任务尚未进入自有 turn 时返回 `turn_pending`，后端保留同一 `append_id` 重试。终态后拒收，不转成无人收结果的新轮。明确拒收的追加保留完整任务，等原任务结果落账后由小沐续办；曾丢失回执的追加仍保留结果未知事实。授权/提问先登记 resolver 再经 `dsh_interactive` 上行，每次交互有独立 opaque id，原始问题与选项完整保留。其他 turn 透传。小沐能拿捏就提交决定，需要用户时提交真实问题并保留等待；`dsh_decide_result` 确认实际应用后才算完成。宿主进程缓存相同 `command_id` 的回执：活跃 run 的收据保留，终态收据按最近 200 项收敛；相同身份不同内容拒收。
+在途追加只在相同 live run 的自有 turn 使用公开 `Agent.steer`，用同 cohort 的 `createUserMessage` 构造消息并同步受理；原任务尚未进入自有 turn 时返回 `turn_pending`，后端保留同一 `append_id` 重试。终态后拒收，不转成无人收结果的新轮。明确拒收的追加保留完整任务，等原任务结果落账后由小沐续办；曾丢失回执的追加仍保留结果未知事实。授权/提问先登记 resolver 再经 `dsh_interactive` 上行，每次交互有独立 opaque id，原始问题与选项完整保留。其他 turn 透传。小沐能拿捏就提交决定，需要用户时提交真实问题并保留等待；`dsh_decide_result` 只确认本地校验提交；后续原生 `tool/result` 或迟到答案接收事件以 `dsh_interactive_result` 确认原生接收，执行最终结果另报。宿主进程缓存相同 `command_id` 的回执：活跃 run 的收据保留，终态收据按最近 200 项收敛；相同身份不同内容拒收。
 
 用户等待暂停活跃执行计时。卸载、断连、取消、上限与错误均清理订阅/等待，保留终态和部分输出；技术失效不表示用户拒绝。宿主 `bridgeId` 经官方 settings 保存且同宿主双挂载共享，排障勿删除或复制该身份。
 
 回答与追加的交付有独立尝试预算；原任务结束、交互超期或交付耗尽后，本地技术收口保留原决定和未知回执，resolver 关闭最多尝试一次，不等待离线宿主无限返回 ACK。未完成追加与恢复事实原子保存，正常等待用户不消耗交付次数。已结束问题的重复上报不会重新暂停后端执行计时。
 
-执行核按上游锁定的 `0.1.7-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
+执行核按上游锁定的 `0.2.0-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
 
 执行前同时订阅 `agent/inbox/claimed`，按消息 rpcId 与所属 turn 绑定来源；上游 pre-step 在写入正文前拒绝或结束时仍保留实际终态，其他 turn 不结算当前任务，所有退出清理两类订阅。
 
-依赖：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-llm` 为 peer（用宿主同 cohort 的服务和消息类型）；`ws`、`undici` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
+依赖：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 、`@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-tools` 为 peer（用宿主同 cohort 的服务和消息类型）；`ws`、`undici` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
 
 </details>
 
@@ -110,3 +110,9 @@ cd dsh && pnpm test   # 先 esbuild 打包 client 再跑全量，重启 Desktop 
 ## 许可
 
 MIT
+
+原生提问输出使用宿主注册的 Schema 校验，选项标签/问题 ID/多选条件完整保留；
+模型可空 custom 在桥接前省略，空选表示明确跳过。限时提问到点只结束前台等待，
+仍通过公开 userQuestions 回答原问题并观察其 inbox 续轮，完成该续轮才回最终任务结果。
+授权上报实际 tool/reason/arguments，缓存原生接收证明可经同 task 查询重投。
+处理失败的持久系统通知经 dialogue_updated 刷新历史，以系统行呈现。
