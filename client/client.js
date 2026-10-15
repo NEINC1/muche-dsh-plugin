@@ -451,6 +451,8 @@
   }
 
   // client/src/entry.js
+  var VISION_PREFLIGHT_MAX_IMAGES = 3;
+  var VISION_PREFLIGHT_MAX_BYTES = 8 * 1024 * 1024;
   window.__ModuleLoader__.load({
     id: "muche-dsh-plugin",
     factory: (require2) => {
@@ -800,23 +802,23 @@
           setInline((current) => current?.operation === "input" ? null : current);
           const okTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
           for (const f of list) {
-            if (pendingImages.length >= 3) {
-              reportFailure({ kind: "input", text: "最多发 3 张图" });
+            if (pendingImages.length >= VISION_PREFLIGHT_MAX_IMAGES) {
+              reportFailure({ kind: "input", text: `最多发 ${VISION_PREFLIGHT_MAX_IMAGES} 张图` });
               break;
             }
             if (okTypes.indexOf(f.type) < 0) {
               reportFailure({ kind: "input", text: "只支持 JPEG/PNG/GIF/WebP" });
               continue;
             }
-            if (f.size > 8 * 1024 * 1024) {
-              reportFailure({ kind: "input", text: "单张图最大 8M" });
+            if (f.size > VISION_PREFLIGHT_MAX_BYTES) {
+              reportFailure({ kind: "input", text: `单张图最大 ${VISION_PREFLIGHT_MAX_BYTES / (1024 * 1024)}M` });
               continue;
             }
             const reader = new FileReader();
             const context = runtimeStore.context();
             reader.onload = () => {
               if (context && !runtimeStore.accepts(context)) return;
-              setPendingImages((prev) => prev.length >= 3 ? prev : [...prev, String(reader.result || "")]);
+              setPendingImages((prev) => prev.length >= VISION_PREFLIGHT_MAX_IMAGES ? prev : [...prev, String(reader.result || "")]);
             };
             reader.readAsDataURL(f);
           }
@@ -1051,7 +1053,7 @@
         };
         const send = () => {
           const text = input.trim();
-          const images = pendingImages.slice(0, 3);
+          const images = pendingImages.slice(0, VISION_PREFLIGHT_MAX_IMAGES);
           if (!text && !images.length) return;
           if (!runtimeStore.context()) return;
           if (quotaUntilRef.current > Date.now()) return;

@@ -74,7 +74,7 @@ dsh plugin remove 'muche-dsh-plugin'
 | `lib/http.js` | 后端 JSON/二进制请求唯一出口（归一前置＋UPSTREAM_HTML 分流） |
 | `lib/runtime-state.js` | 宿主运行状态 Owner：配置代际、聊天收发就绪、桥接生命周期的唯一投影（快照无凭据，订阅即回放当前全量） |
 | `lib/runtime-contract.js` | 宿主/浏览器共用的快照契约与故障去重（同因只去重一次，无关错误不吞） |
-| `lib/routes.js` | `/api/muche/{runtime,chat,history,image,health,events}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID） |
+| `lib/routes.js` | `/api/muche/{runtime,chat,history,image,health,events}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID；聊天/候选健康 JSON 在缓冲前分别限 40 MiB/64 KiB，跨层预算见 `ARCHITECTURE.md` §7） |
 | `lib/connections.js` | 连接生命周期唯一 Owner（面板上游＋桥接各持一个 ChannelConnection，指纹换连） |
 | `lib/backend_ws.js` | 后端 WS 传输类（桥接通道＋面板 SSE 上游，ping/重连/缓冲；`ready` 只由后端真实 hello 置真） |
 | `lib/panel-events.js` | 面板 SSE 扇出 Owner：首位订阅先发完整快照，业务帧按配置 context 盖章 |
