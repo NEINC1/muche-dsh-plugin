@@ -81,6 +81,24 @@ test('Content-Length over the chat budget returns 413 before reading or forwardi
   assert.equal(req.resumed, true)
 })
 
+test('large valid decimal Content-Length returns 413 without Number precision loss', async () => {
+  const handlers = setup()
+  const req = new Request('/api/muche/chat', { 'content-length': '9007199254740992' })
+  const res = response()
+  await handlers.get('/api/muche/chat')(req, res)
+  assert.equal(res.status, 413)
+  assert.equal(req.resumed, true)
+})
+
+test('malformed Content-Length returns 400 before reading or forwarding', async () => {
+  const handlers = setup()
+  const req = new Request('/api/muche/chat', { 'content-length': '12x' })
+  const res = response()
+  await handlers.get('/api/muche/chat')(req, res)
+  assert.equal(res.status, 400)
+  assert.equal(req.resumed, true)
+})
+
 test('chunked chat body counts received bytes and rejects after the cap', async () => {
   const handlers = setup()
   const req = new Request('/api/muche/chat')
