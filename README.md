@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级使用同一条命令。插件 0.8.6 的目标宿主是 DSH `0.2.1-rc.5` 和 `0.2.2-alpha.2`；`engines.dsh` 只接受这两个版本。0.7.0 起使用桥接协议 v2；0.8.5 起协商可选能力（例如显式取消 `assignment-cancel`），0.8.6 起协商任务输入投递 `input-receipts`，旧宿主按能力降级。
+升级使用同一条命令。插件 0.8.7 的目标宿主是 DSH `0.2.1-rc.5` 和 `0.2.2-alpha.2`；`engines.dsh` 只接受这两个版本。0.7.0 起使用桥接协议 v2；0.8.5 起协商可选能力（例如显式取消 `assignment-cancel`），0.8.6 起协商任务输入投递 `input-receipts`，0.8.7 起聊天面板带任务抽屉（列表/状态/停止），旧宿主按能力降级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报

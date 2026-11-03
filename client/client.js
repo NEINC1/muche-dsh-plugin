@@ -643,6 +643,17 @@
             "aria-hidden": true
           },
           h("path", { d: "M14.2 1.8L6.8 9.2M14.2 1.8L9.6 14.2 7 9 1.8 6.4 14.2 1.8Z", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round", strokeLinejoin: "round" })
+        ),
+        tasks: () => h(
+          "svg",
+          {
+            width: 16,
+            height: 16,
+            viewBox: "0 0 16 16",
+            fill: "none",
+            "aria-hidden": true
+          },
+          h("path", { d: "M5.2 4.2h8.2M5.2 8h8.2M5.2 11.8h8.2M2.6 4.2h.01M2.6 8h.01M2.6 11.8h.01", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" })
         )
       };
       const SETTINGS_SECTION = "小沐";
@@ -938,6 +949,20 @@
         const [olderCursor, setOlderCursor] = React.useState(null);
         const [loadingOlder, setLoadingOlder] = React.useState(false);
         const [input, setInput] = React.useState("");
+        const [tasks, setTasks] = React.useState([]);
+        const [tasksOpen, setTasksOpen] = React.useState(false);
+        const loadTasks = React.useCallback(async () => {
+          const res = await runtimeRequest("/api/muche/tasks");
+          if (res?.ok) setTasks(Array.isArray(res.tasks) ? res.tasks : []);
+        }, []);
+        React.useEffect(() => {
+          if (!open) return void 0;
+          void loadTasks();
+          const timer = setInterval(() => {
+            void loadTasks();
+          }, 2e4);
+          return () => clearInterval(timer);
+        }, [open, loadTasks]);
         const [voiceState, setVoiceState] = React.useState("idle");
         const voiceRef = React.useRef(null);
         const [thinking, setThinking] = React.useState(false);
@@ -1691,12 +1716,28 @@
             h("span", {
               style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" }
             }, runtime.label),
+            h(
+              "button",
+              {
+                type: "button",
+                "aria-label": "任务列表",
+                title: "任务列表",
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: () => {
+                  setTasksOpen((value) => !value);
+                  void loadTasks();
+                },
+                style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", background: "none", border: "none", color: "var(--dsw-alias-label-secondary)", padding: "2px 6px" }
+              },
+              icon.tasks(),
+              tasks.filter((task) => task.active).length ? h("span", { style: { fontSize: 11, fontWeight: 600, color: "var(--dsw-alias-state-business-primary)" } }, String(tasks.filter((task) => task.active).length)) : null
+            ),
             desktopChat ? null : h("button", {
               type: "button",
               "aria-label": "关闭聊天",
               onClick: () => panelStore.close(),
               onPointerDown: (e) => e.stopPropagation(),
-              style: { marginLeft: "auto", cursor: "pointer", background: "none", border: "none", color: "var(--dsw-alias-label-secondary)", fontSize: 16, padding: "2px 6px" }
+              style: { marginLeft: 0, cursor: "pointer", background: "none", border: "none", color: "var(--dsw-alias-label-secondary)", fontSize: 16, padding: "2px 6px" }
             }, "×")
           ),
           // Structural faults remain outside the scrollable message list.
@@ -1718,6 +1759,29 @@
             },
             h("div", { role: "alert" }, "⚠ " + problem.text),
             problem.advice ? h("div", { style: { marginTop: 2, color: "var(--dsw-alias-label-secondary)" } }, problem.advice) : null
+          ) : null,
+          tasksOpen ? h(
+            "div",
+            {
+              style: { flex: "none", maxHeight: 190, overflowY: "auto", padding: "8px 12px", borderBottom: "1px solid var(--dsw-alias-border-l2)" }
+            },
+            tasks.length ? tasks.map((task) => h(
+              "div",
+              {
+                key: task.task_id,
+                style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }
+              },
+              h("span", { style: { minWidth: 52, fontSize: 11, color: "var(--dsw-alias-label-secondary)" } }, task.status_label || ""),
+              h("span", { title: task.goal, style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, task.goal || task.task_id),
+              task.active ? h("button", {
+                type: "button",
+                onClick: async () => {
+                  await runtimeRequest("/api/muche/tasks/stop", { task_id: task.task_id });
+                  void loadTasks();
+                },
+                style: { cursor: "pointer", background: "none", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6, padding: "1px 8px", fontSize: 11, color: "var(--dsw-alias-state-error-primary)" }
+              }, "停止") : null
+            )) : h("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)" } }, "暂无任务")
           ) : null,
           h(
             "div",
