@@ -1,0 +1,36 @@
+name: publish
+
+# Tag-driven npm release for muche-dsh-plugin.
+# Setup once on npm: package settings -> Trusted publishing -> add
+#   Publisher: GitHub Actions
+#   Repository: NEINC1/muche-dsh-plugin
+#   Workflow filename: publish.yml
+# Then every pushed tag like v0.8.10 publishes with provenance (no long-lived token).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "tag $TAG does not match package version $VERSION"
+            exit 1
+          fi
+      - name: Publish
+        run: npm publish --provenance --access public
