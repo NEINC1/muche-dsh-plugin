@@ -28,6 +28,28 @@ export const clientDefinition = {
 
     const h = React.createElement
     const desktopChat = window.mucheDesktopChat?.active === true
+    // 输入条只用图形按钮：文字版在窄面板里挤占输入宽度（OI-191 界面优化）。
+    const icon = {
+      image: () => h('svg', {
+        width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+      },
+        h('rect', { x: 1.5, y: 2.5, width: 13, height: 11, rx: 2, stroke: 'currentColor', strokeWidth: 1.3 }),
+        h('circle', { cx: 5, cy: 6, r: 1.1, fill: 'currentColor' }),
+        h('path', { d: 'M2.2 11.8l3.4-3 2.4 2.1 2.9-2.6 3 2.7', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' })),
+      mic: () => h('svg', {
+        width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+      },
+        h('rect', { x: 6, y: 1.8, width: 4, height: 7.2, rx: 2, stroke: 'currentColor', strokeWidth: 1.3 }),
+        h('path', { d: 'M3.6 8.4a4.4 4.4 0 0 0 8.8 0M8 12.8V14.2', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' })),
+      stop: () => h('svg', {
+        width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+      },
+        h('rect', { x: 4.2, y: 4.2, width: 7.6, height: 7.6, rx: 1.6, fill: 'currentColor' })),
+      send: () => h('svg', {
+        width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+      },
+        h('path', { d: 'M14.2 1.8L6.8 9.2M14.2 1.8L9.6 14.2 7 9 1.8 6.4 14.2 1.8Z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' })),
+    }
     // 小沐设置分区的唯一名字：slot 注册与「菜单→设置」跳转共用，改名只改这里。
     const SETTINGS_SECTION = '小沐'
 
@@ -921,7 +943,7 @@ export const clientDefinition = {
           h('span', {
             style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
           }, runtime.label),
-          h('button', {
+          desktopChat ? null : h('button', {
             type: 'button', 'aria-label': '关闭聊天', onClick: () => panelStore.close(),
             onPointerDown: (e) => e.stopPropagation(),
             style: { marginLeft: 'auto', cursor: 'pointer', background: 'none', border: 'none', color: 'var(--dsw-alias-label-secondary)', fontSize: 16, padding: '2px 6px' },
@@ -971,16 +993,19 @@ export const clientDefinition = {
             onChange: (e) => { pickFiles(e.target.files); e.target.value = '' },
           }),
           h('button', {
-            type: 'button', className: 'muche-btn', title: '发图片（最多3张，单张8M）',
+            type: 'button', className: 'muche-btn', title: '发图片（最多3张，单张8M）', 'aria-label': '发图片',
             onClick: () => { if (fileRef.current) fileRef.current.click() },
             disabled: quotaUntil > Date.now(),
-          }, '图'),
+            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
+          }, icon.image()),
           h('button', {
             type: 'button', className: 'muche-btn',
             title: voiceState === 'recording' ? '结束并发送（Alt+Q）' : '语音输入（Alt+Q 开始，Alt+Z 取消）',
+            'aria-label': voiceState === 'recording' ? '结束并发送' : '语音输入',
             onClick: () => { if (voiceState === 'recording') sendVoice(); else void startVoice() },
             disabled: quotaUntil > Date.now(),
-          }, voiceState === 'recording' ? '停' : '麦'),
+            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
+          }, voiceState === 'recording' ? icon.stop() : icon.mic()),
           h('input', {
             ref: inputRef, className: 'muche-field', value: input,
             placeholder: quotaUntil > Date.now() ? '额度已用完…' : (thinking ? '小沐正在想…（可继续发）' : '发消息…'),
@@ -995,7 +1020,11 @@ export const clientDefinition = {
             disabled: quotaUntil > Date.now(),
             style: { flex: 1 },
           }),
-          h('button', { type: 'button', className: 'muche-btn', onClick: send, disabled: quotaUntil > Date.now() }, '发送'),
+          h('button', {
+            type: 'button', className: 'muche-btn', onClick: send,
+            disabled: quotaUntil > Date.now(), title: '发送', 'aria-label': '发送',
+            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
+          }, icon.send()),
         ),
         pendingImages.length ? h('div', { style: { display: 'flex', gap: 6, padding: '0 10px 10px', flexWrap: 'wrap' } },
           pendingImages.map((src, k) => h('div', { key: 'p' + k, style: { position: 'relative', width: 56, height: 56 } },

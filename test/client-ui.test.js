@@ -188,14 +188,14 @@ test('menu sends desktop display requests', async () => {
   } finally { panel.restore() }
 })
 
-test('desktop chat view opens the same panel and closes its own window', async () => {
+test('desktop chat view opens the same panel without a duplicate close button', async () => {
   const panel = await mountPanel({ desktopMode: true })
   try {
     assert.equal(panel.text().includes('连接中'), true)
+    // The desktop window chrome owns closing; an inner × would be a second close.
     const close = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '×')
-    assert.ok(close)
-    await panel.act(async () => close.click())
-    assert.equal(panel.desktopCloses(), 1)
+    assert.equal(close, undefined)
+    assert.equal(panel.desktopCloses(), 0)
   } finally { panel.restore() }
 })
 
