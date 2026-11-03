@@ -19,8 +19,10 @@ const tick = () => new Promise((resolve) => setImmediate(resolve))
  * runtime snapshot the SSE route would publish, and pushes real runtime frames into the
  * EventSource the bundle opened. No source rewriting and no private state poking.
  */
-async function mountPanel() {
+async function mountPanel({ desktopMode = false } = {}) {
   const win = new Window({ url: 'http://127.0.0.1:19387/' })
+  let desktopCloses = 0
+  if (desktopMode) win.mucheDesktopChat = { active: true, close() { desktopCloses++ } }
   const saved = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch, EventSource: globalThis.EventSource }
   const react = await import('react')
   const reactDom = await import('react-dom/client')
@@ -32,9 +34,10 @@ async function mountPanel() {
   runtime.configure(CFG)
   const httpCalls = []
   const fetchStub = async (url, init = {}) => {
-    httpCalls.push({ url: String(url), method: init.method || 'GET' })
+    httpCalls.push({ url: String(url), method: init.method || 'GET', body: init.body })
     if (String(url).includes('/runtime')) return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: runtime.getSnapshot() }) }
     if (String(url).includes('/chat/history')) return { ok: true, status: 200, json: async () => ({ ok: true, messages: [], has_more: false, context: runtime.context() }) }
+    if (String(url).includes('/desktop')) return { ok: true, status: 202, json: async () => ({ ok: true, accepted: true, snapshot: runtime.getSnapshot() }) }
     return { ok: true, status: 200, json: async () => ({ ok: false, code: 'HTTP_ERROR', error: 'unexpected' }) }
   }
   const makeEventSource = (path) => {
@@ -73,7 +76,13 @@ async function mountPanel() {
     register: (spec, render) => { renders[spec.id] = render; return () => {} },
   }
   const configForms = { get: () => ({ getSnapshot: () => ({ status: 'idle', value: {}, revision: 0 }), subscribe: () => () => {}, mutate: async () => {} }) }
-  module.apply({ get: (name) => (name === 'slots' ? slots : configForms), on: () => () => {} }, {})
+  const disposers = []
+  // The client fiber releases registrations through ctx.effect, not through a 'dispose' event.
+  module.apply({
+    get: (name) => name === 'slots' ? slots : configForms,
+    on: () => () => {},
+    effect: (setup) => { const dispose = setup(); if (typeof dispose === 'function') disposers.push(dispose) },
+  }, {})
   const container = win.document.createElement('div')
   win.document.body.appendChild(container)
   const root = reactDom.createRoot(container)
@@ -84,6 +93,7 @@ async function mountPanel() {
       root.render(react.createElement('div', null,
         renders['muche-entry'] ? react.createElement(() => renders['muche-entry']({ wide: true })) : null,
         renders['muche-chat-panel'] ? react.createElement(() => renders['muche-chat-panel']()) : null,
+        renders['muche-menu'] ? react.createElement(() => renders['muche-menu']()) : null,
       ))
     })
   }
@@ -97,18 +107,174 @@ async function mountPanel() {
       }
     })
     assert.equal(clicked, true, 'the sidebar entry exists and opens the panel')
+    await act(async () => {
+      const button = [...win.document.querySelectorAll('button')].find(node => node.textContent === '打开聊天面板')
+      assert.ok(button, 'the desktop-unavailable menu offers chat')
+      button.click()
+    })
   }
   // Host-published runtime frames arrive outside React, so they are wrapped in act() here.
   const pushRuntime = () => act(() => { for (const source of sources) if (!source.closed) source.send({ type: 'runtime', snapshot: runtime.getSnapshot() }) })
   const text = () => win.document.body.textContent || ''
   return {
-    win, runtime, react, httpCalls, sources, open, pushRuntime, text, render, act,
+    win, runtime, react, httpCalls, sources, open, pushRuntime, text, render, act, desktopCloses: () => desktopCloses,
     restore: () => {
+      act(() => root.unmount())
+      for (const dispose of disposers) dispose()
+      runtime.dispose()
+      win.happyDOM.abort()
       globalThis.IS_REACT_ACT_ENVIRONMENT = savedAct
       Object.assign(globalThis, saved)
     },
   }
 }
+
+// The official settings shell renders its launcher as the account menu; the 设置 item is the
+// only entry that opens settings. Settings has no public open service, so the menu must follow
+// that item — and must not fake a keydown, which Desktop's native adapter ignores.
+function accountLauncher(panel, { label = '账号菜单' } = {}) {
+  const button = panel.win.document.createElement('button')
+  button.setAttribute('aria-haspopup', 'menu')
+  button.setAttribute('aria-label', label)
+  button.setAttribute('aria-expanded', 'false')
+  const opened = []
+  button.addEventListener('click', () => {
+    button.setAttribute('aria-expanded', 'true')
+    const menu = panel.win.document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    const item = panel.win.document.createElement('button')
+    item.setAttribute('role', 'menuitem')
+    item.textContent = '设置'
+    item.addEventListener('click', () => { opened.push(item) })
+    menu.appendChild(item)
+    panel.win.document.body.appendChild(menu)
+  })
+  panel.win.document.body.appendChild(button)
+  return { button, opened }
+}
+const settle = async (condition, ms = 600) => {
+  const deadline = Date.now() + ms
+  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+}
+
+test('menu opens DSH settings through the official account launcher', async () => {
+  const panel = await mountPanel()
+  try {
+    const launcher = accountLauncher(panel)
+    let shortcut
+    panel.win.addEventListener('keydown', event => { if (event.code === 'Comma') shortcut = event })
+    const entry = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '小沐')
+    await panel.act(async () => entry.click())
+    assert.ok(panel.win.document.querySelector('[data-muche-menu]'))
+    await panel.act(async () => [...panel.win.document.querySelectorAll('[data-muche-menu] [role="menuitem"]')].find(node => node.textContent === '设置').click())
+    await settle(() => launcher.opened.length === 1)
+    assert.equal(launcher.opened.length, 1, 'the official 设置 item opens settings')
+    assert.equal(shortcut, undefined, 'no synthetic keydown is dispatched')
+  } finally { panel.restore() }
+})
+
+test('menu sends desktop display requests', async () => {
+  const panel = await mountPanel()
+  try {
+    panel.runtime.setDesktop({ available: true, state: 'idle', visible: false, code: '', text: '', progress: '' })
+    await panel.act(async () => { for (const source of panel.sources) source.open() })
+    panel.pushRuntime()
+    const entry = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '小沐')
+    await panel.act(async () => entry.click())
+    assert.equal(panel.text().includes('连接中'), false, 'entry opens only the menu')
+    await panel.act(async () => [...panel.win.document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent === '显示小沐').click())
+    const request = panel.httpCalls.find(call => call.url.includes('/desktop'))
+    assert.deepEqual(JSON.parse(request.body), { action: 'show' })
+  } finally { panel.restore() }
+})
+
+test('desktop chat view opens the same panel and closes its own window', async () => {
+  const panel = await mountPanel({ desktopMode: true })
+  try {
+    assert.equal(panel.text().includes('连接中'), true)
+    const close = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '×')
+    assert.ok(close)
+    await panel.act(async () => close.click())
+    assert.equal(panel.desktopCloses(), 1)
+  } finally { panel.restore() }
+})
+
+test('Alt+Q records and sends a voice turn while Alt+Z discards it', async () => {
+  const panel = await mountPanel()
+  try {
+    await panel.open()
+    // The runtime context must be live before a voice turn can be posted (same gate as text).
+    await panel.act(async () => { for (const source of panel.sources) source.open() })
+    panel.pushRuntime()
+    const stopped = []
+    const microphones = []
+    const contexts = []
+    panel.win.navigator.mediaDevices = { getUserMedia: async () => { microphones.push(1); return { getTracks: () => [{ stop: () => stopped.push(1) }] } } }
+    class FakeContext {
+      constructor() { this.sampleRate = 48000; this.destination = {}; contexts.push(this) }
+      createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+      createScriptProcessor() { this.processor = { onaudioprocess: null, connect() {}, disconnect() {} }; return this.processor }
+      createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} } }
+      close() { return Promise.resolve() }
+    }
+    panel.win.AudioContext = FakeContext
+    const speakInto = (context, samples = 48000) => context.processor.onaudioprocess({ inputBuffer: { numberOfChannels: 1, getChannelData: () => new Float32Array(samples).fill(0.2) } })
+    const altQ = () => panel.win.dispatchEvent(new panel.win.KeyboardEvent('keydown', { code: 'KeyQ', altKey: true }))
+    const altZ = () => panel.win.dispatchEvent(new panel.win.KeyboardEvent('keydown', { code: 'KeyZ', altKey: true }))
+
+    await panel.act(async () => { altQ(); await tick() })
+    assert.equal(microphones.length, 1, 'Alt+Q starts recording')
+    assert.equal(panel.text().includes('正在听'), true)
+
+    await panel.act(async () => { altZ(); await tick() })
+    assert.equal(stopped.length, 1, 'Alt+Z releases the microphone')
+    assert.equal(panel.text().includes('正在听'), false, 'the recording prompt disappears')
+    assert.equal(panel.httpCalls.some(call => String(call.body || '').includes('"audio"')), false, 'a cancelled recording is never sent')
+
+    await panel.act(async () => { altQ(); await tick() })
+    await panel.act(async () => { speakInto(contexts.at(-1)); await tick() })
+    await panel.act(async () => { altQ(); await tick() })
+    const sent = panel.httpCalls.filter(call => call.url.includes('/api/muche/chat'))
+    assert.equal(sent.length, 1, `the second Alt+Q sends exactly one turn (sent=${sent.length} mics=${microphones.length} stopped=${stopped.length})`)
+    assert.match(String(sent[0].body), /"audio":"[A-Za-z0-9+/=]+"/, 'the turn carries WAV base64 audio')
+    assert.equal(stopped.length, 2, 'the microphone is released on send')
+
+    // 误触：连按两下、录音太短，不发出去，只提示。
+    await panel.act(async () => { altQ(); await tick() })
+    await panel.act(async () => { speakInto(contexts.at(-1), 4800); await tick() })
+    await panel.act(async () => { altQ(); await tick() })
+    assert.equal(panel.httpCalls.filter(call => call.url.includes('/api/muche/chat')).length, 1, 'a too-short recording is not sent')
+    assert.equal(panel.text().includes('说话太短'), true, 'the panel explains why nothing was sent')
+  } finally { panel.restore() }
+})
+
+test('settings clicks the plain trigger the shell renders without the account feature', async () => {
+  const panel = await mountPanel()
+  try {
+    const hostButton = panel.win.document.createElement('button')
+    hostButton.setAttribute('aria-label', '设置')
+    hostButton.setAttribute('aria-haspopup', 'dialog')
+    let clicks = 0
+    hostButton.addEventListener('click', () => { clicks++ })
+    panel.win.document.body.appendChild(hostButton)
+    const entry = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '小沐')
+    await panel.act(async () => entry.click())
+    await panel.act(async () => [...panel.win.document.querySelectorAll('[data-muche-menu] [role="menuitem"]')].find(node => node.textContent === '设置').click())
+    await settle(() => clicks === 1)
+    assert.equal(clicks, 1)
+  } finally { panel.restore() }
+})
+
+test('settings without a host launcher never reopens the plugin menu', async () => {
+  const panel = await mountPanel()
+  try {
+    const entry = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '小沐')
+    await panel.act(async () => entry.click())
+    await panel.act(async () => [...panel.win.document.querySelectorAll('[data-muche-menu] [role="menuitem"]')].find(node => node.textContent === '设置').click())
+    await settle(() => false, 300)
+    assert.equal(panel.win.document.querySelector('[data-muche-menu]'), null, 'its own entry is not treated as the launcher')
+  } finally { panel.restore() }
+})
 
 test('the panel starts in connecting and only reports online after a synchronized ready snapshot', async () => {
   const panel = await mountPanel()

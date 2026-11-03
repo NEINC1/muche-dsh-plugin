@@ -1,8 +1,7 @@
 allowBuilds:
   esbuild: true
 
-# 开发/单测使用 package.json 声明的宿主 cohort，运行时由宿主提供官方 peer：
-# schemastery 须 ≥3.18.4 才有 .volatile()，cordis 须 4.0.4（loader volatile 提交）。
 overrides:
-  '@deepseek-ai/schemastery@>=3.18.4': 3.18.4
-  '@deepseek-ai/cordis@^4.0.1': 4.0.4
+  '@deepseek-ai/schemastery@>=3.18.4-0': 3.18.6-alpha.1
+  '@deepseek-ai/cordis@>=4.0.4-0': 4.0.6-alpha.1
+  zod: 4.6.7

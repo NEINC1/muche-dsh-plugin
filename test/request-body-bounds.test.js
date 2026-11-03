@@ -8,6 +8,7 @@ const root = new URL('../../', import.meta.url)
 const pythonLimits = readFileSync(new URL('src/infra/transport_limits.py', root), 'utf8')
 const pythonVision = readFileSync(new URL('src/domains/conversation/vision.py', root), 'utf8')
 const routesSource = readFileSync(new URL('dsh/lib/routes.js', root), 'utf8')
+const pythonChat = readFileSync(new URL('src/api/routers/chat.py', root), 'utf8')
 const apiSource = readFileSync(new URL('deploy/nginx.conf', root), 'utf8')
 const clientSource = readFileSync(new URL('dsh/client/src/entry.js', root), 'utf8')
 const pythonLimit = /CHAT_INGRESS_MAX_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(pythonLimits)
@@ -118,4 +119,25 @@ test('candidate health JSON has a separate bounded read', async () => {
   const res = response()
   await handlers.get('/api/muche/health')(req, res)
   assert.equal(res.status, 413)
+})
+
+test('voice audio rides the same chat route under the backend byte budget', async () => {
+  const pythonAudio = /CHAT_AUDIO_MAX_BASE64_CHARS\s*=\s*([\d_]+)/.exec(pythonChat)
+  const dshAudio = /CHAT_AUDIO_MAX_BASE64_CHARS\s*=\s*([\d_]+)/.exec(routesSource)
+  assert.ok(pythonAudio && dshAudio, 'both layers declare the audio budget')
+  assert.equal(Number(dshAudio[1].replace(/_/g, '')), Number(pythonAudio[1].replace(/_/g, '')), 'the DSH cap mirrors the backend')
+  assert.ok(routesSource.includes('if (audio) payload.audio = audio'), 'the route forwards audio unchanged')
+  assert.ok(routesSource.includes('if (!text && !images?.length && !audio)'), 'a voice turn may carry no text')
+})
+
+test('oversized voice audio is rejected before anything is forwarded', async () => {
+  const handlers = setup()
+  const req = new Request('/api/muche/chat')
+  const res = response()
+  const pending = handlers.get('/api/muche/chat')(req, res)
+  req.emit('data', Buffer.from(JSON.stringify({ audio: 'A'.repeat(4_000_001) })))
+  req.emit('end')
+  await pending
+  assert.equal(res.status, 413)
+  assert.match(res.body, /AUDIO_TOO_LARGE/)
 })

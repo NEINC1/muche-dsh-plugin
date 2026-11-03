@@ -6,6 +6,8 @@
 // 纯函数在 ./pure.js（直测），同源调用在 ./api.js；本文件只留工厂与 UI。
 import { apiGet, apiPost } from './api.js'
 import { clipboardImageFiles, fmtTime, gapMinutes, localHM } from './pure.js'
+import { downmix, encodeRecording } from './voice.js'
+import { openDshSettings } from './settings-entry.js'
 import { classifyFailure, STALE_RUNTIME } from '../../lib/errors.js'
 import { isSameProblem } from '../../lib/runtime-contract.js'
 import { createRuntimeClient } from './runtime-store.js'
@@ -13,8 +15,11 @@ import { createRuntimeClient } from './runtime-store.js'
 // UI preflight only; dsh/test/request-body-bounds.test.js ties these to Vision's Owner values.
 const VISION_PREFLIGHT_MAX_IMAGES = 3
 const VISION_PREFLIGHT_MAX_BYTES = 8 * 1024 * 1024
+// 语音误触门槛：短于这个时长的录音直接丢掉（按一下开始、再按一下发送时，手滑连按不会发出去）。
+// 真正"有没有声音"仍由后端按 peak 判定，这里只拦"根本没打算说"。
+const MIN_VOICE_MS = 400
 
-window.__ModuleLoader__.load({
+export const clientDefinition = {
   id: 'muche-dsh-plugin',
   factory: (require) => {
     var module = { exports: {} }
@@ -22,6 +27,9 @@ window.__ModuleLoader__.load({
     let React = require('react')
 
     const h = React.createElement
+    const desktopChat = window.mucheDesktopChat?.active === true
+    // 小沐设置分区的唯一名字：slot 注册与「菜单→设置」跳转共用，改名只改这里。
+    const SETTINGS_SECTION = '小沐'
 
     // ── 样式 ──
     const CSS = `
@@ -30,6 +38,8 @@ window.__ModuleLoader__.load({
       .muche-field{box-sizing:border-box;width:100%;height:34px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px}
       .muche-field:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
       .muche-btn{box-sizing:border-box;height:32px;padding:0 14px;border:none;border-radius:8px;background:var(--dsw-alias-state-business-primary);color:#fff;font:inherit;font-size:13px;cursor:pointer}
+      /* 官方设置入口是账号菜单里的一项；过渡期间把那个菜单藏起来，别让用户看到"先弹一下再进设置" */
+      html.muche-settings-transition [role="menu"]:not([data-muche-menu]){visibility:hidden}
     `
     if (typeof document !== 'undefined') {
       const tag = document.createElement('style')
@@ -40,7 +50,7 @@ window.__ModuleLoader__.load({
 
     // ── 面板共享状态(open + 未读小红点) ──
     const panelStore = {
-      open: false,
+      open: desktopChat,
       unread: 0,
       subs: [],
       toggle() {
@@ -48,7 +58,8 @@ window.__ModuleLoader__.load({
         if (this.open) this.unread = 0
         for (const f of this.subs) f()
       },
-      close() { if (this.open) { this.open = false; for (const f of this.subs) f() } },
+      close() { if (desktopChat) { window.mucheDesktopChat.close(); return } if (this.open) { this.open = false; for (const f of this.subs) f() } },
+      openPanel() { this.open = true; this.unread = 0; for (const f of this.subs) f() },
       bumpUnread() { if (!this.open) { this.unread += 1; for (const f of this.subs) f() } },
       markRead() { if (this.unread !== 0) { this.unread = 0; for (const f of this.subs) f() } },
       subscribe(f) { this.subs.push(f); return () => { this.subs = this.subs.filter((x) => x !== f) } },
@@ -57,6 +68,18 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(panelStore.open)
       React.useEffect(() => panelStore.subscribe(() => setOpen(panelStore.open)), [])
       return open
+    }
+    const menuStore = {
+      open: false, anchor: null, subs: [],
+      set(open, anchor) { this.open = open; this.anchor = open ? anchor : null; for (const f of this.subs) f() },
+      toggle(anchor) { this.set(!this.open, anchor) },
+      close() { if (this.open) this.set(false, null) },
+      subscribe(f) { this.subs.push(f); return () => { this.subs = this.subs.filter(x => x !== f) } },
+    }
+    function useMenu() {
+      const [value, setValue] = React.useState({ open: menuStore.open, anchor: menuStore.anchor })
+      React.useEffect(() => menuStore.subscribe(() => setValue({ open: menuStore.open, anchor: menuStore.anchor })), [])
+      return value
     }
 
     const runtimeStore = createRuntimeClient()
@@ -120,13 +143,15 @@ window.__ModuleLoader__.load({
 
     function MucheEntry({ wide }) {
       const open = usePanelOpen()
+      const menu = useMenu()
       const unread = useUnread()
+      const toggleMenu = event => { const r = event.currentTarget.getBoundingClientRect(); menuStore.toggle({ left: r.left, top: r.top, width: r.width, height: r.height }) }
       const entryTitle = open
         ? '小沐面板已打开'
         : (unread > 0 ? `小沐有 ${unread} 条未读` : '打开小沐')
       if (!wide) {
         return h('button', {
-          type: 'button', onClick: () => panelStore.toggle(),
+          type: 'button', onClick: toggleMenu, 'data-muche-entry': '', 'aria-haspopup': 'menu', 'aria-expanded': menu.open,
           title: entryTitle,
           className: 'muche-settings-entry',
           style: {
@@ -144,7 +169,7 @@ window.__ModuleLoader__.load({
         )
       }
       return h('button', {
-        type: 'button', onClick: () => panelStore.toggle(),
+        type: 'button', onClick: toggleMenu, 'data-muche-entry': '', 'aria-haspopup': 'menu', 'aria-expanded': menu.open,
         title: entryTitle,
         className: 'muche-settings-entry',
         style: {
@@ -165,6 +190,39 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function MucheMenu() {
+      const menu = useMenu(), runtime = useRuntime()
+      const desktop = runtime?.snapshot?.desktop
+      const menuRef = React.useRef(null)
+      React.useEffect(() => {
+        if (!menu.open) return
+        const onKey = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); menuStore.close() } }
+        document.addEventListener('keydown', onKey, true)
+        return () => document.removeEventListener('keydown', onKey, true)
+      }, [menu.open])
+      React.useEffect(() => {
+        if (menu.open) menuRef.current?.querySelector('[role="menuitem"]:not([disabled])')?.focus()
+      }, [menu.open])
+      if (!menu.open || !menu.anchor) return null
+      const available = desktop?.available === true
+      const busy = ['starting', 'stopping'].includes(desktop?.state)
+      const action = desktop?.state === 'visible' ? 'hide' : desktop?.state === 'failed' ? 'retry' : 'show'
+      const label = desktop?.state === 'visible' ? '隐藏小沐' : desktop?.state === 'failed' ? '重试显示' : desktop?.state === 'starting' ? '正在显示…' : desktop?.state === 'stopping' ? '正在隐藏…' : '显示小沐'
+      const row = (key, text, onClick, disabled = false) => h('button', { key, type: 'button', role: 'menuitem', disabled, onClick,
+        style: { display: 'block', width: '100%', padding: '8px 10px', border: 0, borderRadius: 8, background: 'transparent', color: 'var(--dsw-alias-label-primary)', textAlign: 'left', cursor: disabled ? 'default' : 'pointer' } }, text)
+      const children = [row('settings', '设置', () => {
+        menuStore.close()
+        // 直接落到小沐自己的设置页，不停在设置首页。
+        void openDshSettings({ document, section: SETTINGS_SECTION }).then(via => { if (via === 'none') console.warn('muche menu: settings entry unavailable') })
+      }),
+        row('desktop', label, () => { menuStore.close(); void runtimeRequest('/api/muche/desktop', { action }) }, !available || busy)]
+      if (desktop?.text || desktop?.progress) children.push(h('div', { key: 'status', style: { padding: '4px 10px', fontSize: 11 } }, desktop.progress || desktop.text))
+      if (!available) children.push(row('chat', '打开聊天面板', () => { menuStore.close(); panelStore.openPanel() }))
+      return h(React.Fragment, null,
+        h('div', { onClick: () => menuStore.close(), style: { position: 'fixed', inset: 0, zIndex: 1199, background: 'transparent' } }),
+        h('div', { ref: menuRef, role: 'menu', 'aria-label': '小沐', 'data-muche-menu': '', style: { position: 'fixed', left: Math.max(8, Math.min(menu.anchor.left, window.innerWidth - 216)), bottom: window.innerHeight - menu.anchor.top + 8, width: 208, zIndex: 1200, background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 12, padding: 6 } }, children))
+    }
+
     // ── 聊天面板 ──
     function ChatPanel() {
       const open = usePanelOpen()
@@ -176,6 +234,9 @@ window.__ModuleLoader__.load({
       const [olderCursor, setOlderCursor] = React.useState(null)
       const [loadingOlder, setLoadingOlder] = React.useState(false)
       const [input, setInput] = React.useState('')
+      // 语音状态只用于提示与按钮文案；真正的录音会话在 voiceRef 里（Alt+Q/Alt+Z 直接读它）。
+      const [voiceState, setVoiceState] = React.useState('idle')
+      const voiceRef = React.useRef(null)
       // 在途回复只是一个提示状态：输入框永不为它禁用，连续追发由后端合并语义承接。
       const [thinking, setThinking] = React.useState(false)
       const [pendingImages, setPendingImages] = React.useState([])
@@ -207,6 +268,8 @@ window.__ModuleLoader__.load({
         setMsgs(renderMerged(baseRef.current))
       }
       const noticesRef = React.useRef(new Map()) // Per-message failures, bounded and never persona speech.
+      // 本轮语音回复的 WAV base64（只留在内存里，用于"重播这条语音"，不落盘、不进历史）。
+      const voiceClipsRef = React.useRef(new Map())
       const quotaUntilRef = React.useRef(0)
       const setQuota = (ms) => { quotaUntilRef.current = ms; setQuotaUntil(ms) }
       const failureNotice = () => ({ kind: 'operation', text: '这条消息暂时没处理完，请稍后重试' })
@@ -308,13 +371,27 @@ window.__ModuleLoader__.load({
         const kept = overlayRef.current.filter((o) => !overlayCovered(o, base))
         if (kept.length !== overlayRef.current.length) overlayRef.current = kept
       }
+      // 语音轮的占位气泡在发送时还不知道内容；服务端转写回来后按 mid 原地补齐。
+      const updateOverlay = (mid, patch) => {
+        let changed = false
+        for (const row of overlayRef.current) if (row.mid === mid) { Object.assign(row, patch); changed = true }
+        if (changed) setMsgs(renderMerged(baseRef.current))
+      }
+      // 后端在语音轮返回本轮 WAV base64（直放）；播放失败只是没有声音，不升级成故障。
+      const playVoice = (audio) => {
+        if (!audio || typeof Audio === 'undefined') return
+        try { new Audio('data:audio/wav;base64,' + audio).play().catch(() => {}) } catch { /* 忽略播放失败 */ }
+      }
 
       const handleHttpReply = (res, nowIso, mid) => {
         if (res?.stale) return
         settleInflight(mid)
         if (!res?.ok) { reportFailure(res, { operation: 'message', ts: nowIso, mid }); return }
         if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current))
-        const parts = (res.messages || []).map((t) => ({ role: 'assistant', content: String(t), inner_thought: res.inner_thought || '', ts: nowIso }))
+        // 语音轮：用户气泡的内容是服务端转写，替换发送时的占位；回复音频直放并可重播。
+        if (res.transcript) updateOverlay(mid, { content: res.transcript })
+        if (res.audio) { voiceClipsRef.current.set(mid, res.audio); playVoice(res.audio) }
+        const parts = (res.messages || []).map((t) => ({ role: 'assistant', content: String(t), inner_thought: res.inner_thought || '', ts: nowIso, voice: Boolean(res.audio), voiceKey: res.audio ? mid : '' }))
         if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
           reportFailure(failureNotice(), { operation: 'message', ts: nowIso, mid })
         } else if (parts.length > 0) overlayAdd(parts)
@@ -582,6 +659,26 @@ window.__ModuleLoader__.load({
         })
       }
 
+      // 唯一的聊天上行：文字、图片、语音都从这里发，差别只在带了哪个字段。
+      // 返回 false 表示这一刻还不能发（没有运行上下文 / 额度用尽），由调用方决定怎么提示。
+      const postChat = ({ text = '', images = [], audio = '', optimisticText = '' }) => {
+        if (!runtimeStore.context()) return false
+        if (quotaUntilRef.current > Date.now()) return false
+        const nowIso = typeof Date !== 'undefined' ? new Date().toISOString() : ''
+        // HTTP is the only chat uplink; message_id is stable for this operation.
+        const mid = runtimeStore.newId('m')
+        overlayAdd([{ role: 'user', content: optimisticText, inner_thought: '', ts: nowIso, previews: images, mid, medium: audio ? 'voice' : 'text' }])
+        // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
+        setThinking(true)
+        inflightRef.current.add(mid)
+        runtimeRequest('/api/muche/chat', {
+          text, message_id: mid,
+          images: images.length ? images : undefined,
+          audio: audio || undefined,
+        }).then((res) => handleHttpReply(res, nowIso, mid))
+        return true
+      }
+
       const send = () => {
         const text = input.trim()
         const images = pendingImages.slice(0, VISION_PREFLIGHT_MAX_IMAGES)
@@ -591,14 +688,7 @@ window.__ModuleLoader__.load({
         setInput('')
         setPendingImages([])
         setInline((current) => current?.operation === 'input' ? null : current)
-        const nowIso = typeof Date !== 'undefined' ? new Date().toISOString() : ''
-        // HTTP is the only chat uplink; message_id is stable for this operation.
-        const mid = runtimeStore.newId('m')
-        overlayAdd([{ role: 'user', content: text, inner_thought: '', ts: nowIso, previews: images, mid }])
-        // 不锁输入框：连续追发由后端合并语义承接；在途只做提示。
-        setThinking(true)
-        inflightRef.current.add(mid)
-        runtimeRequest('/api/muche/chat', { text, message_id: mid, images: images.length ? images : undefined }).then((res) => handleHttpReply(res, nowIso, mid))
+        postChat({ text, images, optimisticText: text })
         if (inputRef.current && typeof inputRef.current.focus === 'function') inputRef.current.focus()
       }
 
@@ -651,6 +741,16 @@ window.__ModuleLoader__.load({
                   color: mine ? '#fff' : 'var(--dsw-alias-label-primary)',
                 },
               }, m.content) : null,
+              // 语音轮：这条回复是语音，给一个可重播的标记（自动直放之外，用户还能再听一遍）。
+              m.voice ? h('button', {
+                type: 'button', 'aria-label': '重播这条语音', title: '重播这条语音',
+                onClick: () => playVoice(voiceClipsRef.current.get(m.voiceKey)),
+                style: {
+                  display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: m.content ? 6 : 0,
+                  padding: '4px 8px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10,
+                  background: 'transparent', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, cursor: 'pointer',
+                },
+              }, '🔊 语音') : null,
             ),
           ),
         )
@@ -676,6 +776,94 @@ window.__ModuleLoader__.load({
         } else rows.push(bubble(m, key, showTime))
       }
 
+      // ── 语音输入：Alt+Q 开始 / 再按一次结束并发送，Alt+Z 取消 ──
+      // 录音在本页（麦克风权限与键盘焦点都在这），转写在服务端：POST /chat 的 audio 字段。
+      // 前端只把采到的任意采样率收敛成后端认的 16 kHz 单声道 PCM16 WAV（见 ./voice.js）。
+      const releaseVoice = () => {
+        const session = voiceRef.current
+        voiceRef.current = null
+        if (!session) return null
+        try { session.processor.disconnect() } catch { /* 已断开 */ }
+        try { session.source.disconnect() } catch { /* 已断开 */ }
+        try { session.gain.disconnect() } catch { /* 已断开 */ }
+        for (const track of session.stream.getTracks()) track.stop()
+        Promise.resolve(session.context.close()).catch(() => {})
+        return session
+      }
+      const cancelVoice = () => { releaseVoice(); setVoiceState('idle') }
+      const startVoice = async () => {
+        // 录音不等运行上下文：窗口刚打开时连接还在建，先让人说话，发送前再校验（见 postChat）。
+        if (voiceRef.current) return
+        const media = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
+        if (!media || typeof media.getUserMedia !== 'function') { setInline({ kind: 'operation', text: '当前环境无法录音' }); return }
+        try {
+          const stream = await media.getUserMedia({ audio: true })
+          const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+          const context = new AudioContextCtor()
+          const source = context.createMediaStreamSource(stream)
+          const processor = context.createScriptProcessor(4096, 1, 1)
+          const gain = context.createGain()
+          gain.gain.value = 0 // 只为让处理器持续触发，不要把麦克风回放到扬声器
+          const chunks = []
+          processor.onaudioprocess = (event) => {
+            const buffer = event.inputBuffer
+            const channels = []
+            for (let c = 0; c < buffer.numberOfChannels; c += 1) channels.push(new Float32Array(buffer.getChannelData(c)))
+            chunks.push(downmix(channels))
+          }
+          source.connect(processor)
+          processor.connect(gain)
+          gain.connect(context.destination)
+          voiceRef.current = { stream, context, source, processor, gain, chunks, sampleRate: context.sampleRate }
+          setVoiceState('recording')
+        } catch (error) {
+          setInline({ kind: 'operation', text: '无法使用麦克风，请检查系统权限' })
+          setVoiceState('idle')
+        }
+      }
+      const sendVoice = () => {
+        const session = releaseVoice()
+        setVoiceState('idle')
+        if (!session) return
+        const samples = session.chunks.reduce((total, chunk) => total + chunk.length, 0)
+        const durationMs = session.sampleRate > 0 ? (samples / session.sampleRate) * 1000 : 0
+        if (!samples) { setInline({ kind: 'operation', text: '没有录到声音，请重试' }); return }
+        if (durationMs < MIN_VOICE_MS) { setInline({ kind: 'operation', text: '说话太短，这条没有发送' }); return }
+        const sent = postChat({ audio: encodeRecording({ chunks: session.chunks, sampleRate: session.sampleRate }), optimisticText: '🎤 语音' })
+        if (!sent) setInline({ kind: 'operation', text: '还没有连上小沐，这条语音没发出去' })
+      }
+      // 桌面级语音：全局 Alt+Q/Alt+Z 由 Electron 主进程转发进来（聊天框不用打开、不用聚焦）。
+      // 按一下开始、再按一下发送；太短的录音由 sendVoice 按误触丢弃。
+      React.useEffect(() => {
+        const bridge = window.mucheDesktopChat
+        if (!bridge?.onVoiceCommand) return undefined
+        return bridge.onVoiceCommand((payload) => {
+          const command = payload && typeof payload === 'object' ? payload.command : payload
+          if (command === 'voice-start') { void startVoice(); return }
+          if (command === 'voice-stop') { sendVoice(); return }
+          if (command === 'voice-cancel') cancelVoice()
+        })
+      }, [])
+      React.useEffect(() => { window.mucheDesktopChat?.reportVoiceState?.(voiceState) }, [voiceState])
+      // 快捷键只在面板打开时生效，且不做全局注册：不会抢占别的软件的 Alt+Q。
+      React.useEffect(() => {
+        if (!open) return
+        const onKey = (event) => {
+          if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          if (event.code === 'KeyQ') {
+            event.preventDefault(); event.stopPropagation()
+            if (voiceRef.current) sendVoice(); else void startVoice()
+            return
+          }
+          if (event.code === 'KeyZ' && voiceRef.current) {
+            event.preventDefault(); event.stopPropagation()
+            cancelVoice()
+          }
+        }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
+      }, [open])
+
       if (!open) return null
 
       const onDragStart = (e) => {
@@ -694,20 +882,21 @@ window.__ModuleLoader__.load({
 
       // 拖拽只有一套机制，两个手柄共用：顶部标题栏与底部拖拽条。
       // 顶部被顶出可视区时底部仍可把面板拖回。
-      const dragHandle = {
+      const dragHandle = desktopChat ? {} : {
         onPointerDown: onDragStart, onPointerMove: onDragMove,
         onPointerUp: onDragEnd, onPointerCancel: onDragEnd,
       }
 
       return h('div', {
         ref: panelRef,
+        'data-muche-desktop-chat': desktopChat ? '' : undefined,
         style: {
           position: 'fixed',
-          ...(pos ? { left: pos.left, top: pos.top } : { right: 24, bottom: 24 }),
+          ...(desktopChat ? { inset: 0 } : pos ? { left: pos.left, top: pos.top } : { right: 24, bottom: 24 }),
           zIndex: 1200,
-          width: 380, height: 560, display: 'flex', flexDirection: 'column',
+          width: desktopChat ? '100%' : 380, height: desktopChat ? '100%' : 560, display: 'flex', flexDirection: 'column',
           background: 'var(--dsw-alias-bg-base)',
-          border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 16,
+          border: desktopChat ? 'none' : '1px solid var(--dsw-alias-border-l1)', borderRadius: desktopChat ? 0 : 16,
           boxShadow: 'var(--dsw-shadow-lv2)', overflow: 'hidden',
           pointerEvents: 'auto',
         },
@@ -717,7 +906,7 @@ window.__ModuleLoader__.load({
           style: {
             display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
             borderBottom: '1px solid var(--dsw-alias-border-l2)',
-            cursor: 'grab', userSelect: 'none', touchAction: 'none',
+            cursor: desktopChat ? 'default' : 'grab', userSelect: 'none', touchAction: 'none',
           },
         },
           h('span', { style: { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, '小沐'),
@@ -733,7 +922,7 @@ window.__ModuleLoader__.load({
             style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
           }, runtime.label),
           h('button', {
-            type: 'button', onClick: () => panelStore.close(),
+            type: 'button', 'aria-label': '关闭聊天', onClick: () => panelStore.close(),
             onPointerDown: (e) => e.stopPropagation(),
             style: { marginLeft: 'auto', cursor: 'pointer', background: 'none', border: 'none', color: 'var(--dsw-alias-label-secondary)', fontSize: 16, padding: '2px 6px' },
           }, '×'),
@@ -771,6 +960,10 @@ window.__ModuleLoader__.load({
         ),
         quotaUntil > Date.now() ? h('div', { style: { padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } },
           '消息额度已用完，' + (localHM(new Date(quotaUntil).toISOString()) || '稍后') + ' 后恢复') : null,
+        voiceState === 'recording' ? h('div', {
+          role: 'status',
+          style: { padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-state-business-primary)' },
+        }, '正在听… Alt+Q 结束并发送，Alt+Z 取消') : null,
         h('div', { style: { display: 'flex', gap: 8, padding: 10, borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           h('input', {
             ref: fileRef, type: 'file', accept: 'image/jpeg,image/png,image/gif,image/webp', multiple: true,
@@ -782,6 +975,12 @@ window.__ModuleLoader__.load({
             onClick: () => { if (fileRef.current) fileRef.current.click() },
             disabled: quotaUntil > Date.now(),
           }, '图'),
+          h('button', {
+            type: 'button', className: 'muche-btn',
+            title: voiceState === 'recording' ? '结束并发送（Alt+Q）' : '语音输入（Alt+Q 开始，Alt+Z 取消）',
+            onClick: () => { if (voiceState === 'recording') sendVoice(); else void startVoice() },
+            disabled: quotaUntil > Date.now(),
+          }, voiceState === 'recording' ? '停' : '麦'),
           h('input', {
             ref: inputRef, className: 'muche-field', value: input,
             placeholder: quotaUntil > Date.now() ? '额度已用完…' : (thinking ? '小沐正在想…（可继续发）' : '发消息…'),
@@ -990,7 +1189,7 @@ window.__ModuleLoader__.load({
       })
       const onVisible = () => { if (document.visibilityState === 'visible') runtimeStore.ensureConnected() }
       document.addEventListener('visibilitychange', onVisible)
-      ctx.on('dispose', () => {
+      ctx.effect(() => () => {
         offBinding()
         runtimeStore.dispose()
         document.removeEventListener('visibilitychange', onVisible)
@@ -1006,14 +1205,20 @@ window.__ModuleLoader__.load({
         { name: 'shell.overlay', id: 'muche-chat-panel', order: 5, label: '小沐聊天' },
         () => h(ChatPanel),
       ))
+      slots.inject('shell.overlay', () => slots.register(
+        { name: 'shell.overlay', id: 'muche-menu', order: 6, label: '小沐菜单' },
+        () => h(MucheMenu),
+      ))
       slots.inject('settings.section', () => slots.register(
-        { name: 'settings.section', id: 'muche', order: 30, label: '小沐' },
+        { name: 'settings.section', id: 'muche', order: 30, label: SETTINGS_SECTION },
         () => h(MucheSettingsSection),
       ))
     }
 
     exports.apply = apply
     exports.inject = ['slots', 'configForms']
+    exports.desktopView = { ChatPanel, start: () => runtimeStore.start(), dispose: () => runtimeStore.dispose() }
     return module.exports
   },
-})
+}
+if (window.__ModuleLoader__) window.__ModuleLoader__.load(clientDefinition)

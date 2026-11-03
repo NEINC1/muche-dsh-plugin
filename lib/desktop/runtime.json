@@ -1,0 +1,6 @@
+{
+  "electronVersion": "43.3.0",
+  "mirror": "https://npmmirror.com/mirrors/electron/",
+  "window": { "bodyHeight": 210, "padding": 8, "clickDragThresholdPx": 4 },
+  "timeouts": { "readyMs": 15000, "shownMs": 5000, "stopGraceMs": 3000, "stopKillMs": 3000, "pingMs": 10000, "pingMissLimit": 3, "restartBaseMs": 1000, "restartMaxAttempts": 3, "stableResetMs": 180000 }
+}

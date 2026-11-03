@@ -1,12 +1,12 @@
 # muche-dsh-plugin — 和有持续状态的小沐聊天
 
 [![npm](https://img.shields.io/npm/v/muche-dsh-plugin.svg)](https://www.npmjs.com/package/muche-dsh-plugin)
-[![license](https://img.shields.io/npm/l/muche-dsh-plugin.svg)](LICENSE)
+[![license](https://img.shields.io/npm/l/muche-dsh-plugin.svg)](desktop-helper/assets/README.md)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务。
 
-* **聊天浮层**：左下角「小沐」入口，可拖动面板，聊天气泡，未读红点，主动消息实时弹入；输入框支持 `Ctrl+V` 粘贴图片。
+* **聊天与桌面窗**：左下角「小沐」入口打开菜单，显示桌面小沐后点击立绘打开聊天面板；支持未读提示与图片粘贴。
 * **服务端直读**：聊天记录只在服务端，面板首屏单页、增量归一、游标翻页；本机不存任何聊天文件，重装换机天然可用。
 * **反向桥接**：小沐可调用你本机 dsh 执行任务（出站常驻连接，不开入站端口）。
 * **设置页**：后端地址 + API key，每用户各自配置。
@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级是同一条命令（重跑即升到最新版）。插件版本见 `package.json` 的 `version`（0.7.0 起使用桥接协议 v2），dsh 本体须为上游锁定的 `0.2.0-rc.2` 同 cohort（见 `pnpm-workspace.yaml`，旧 cohort 不再兼容）。`package.json` 已经 `engines.dsh`（`0.2.0-rc.2`）显式声明该要求，市场会对不满足的旧宿主阻断安装并提示升级。
+升级使用同一条命令。插件 0.8.5 的目标宿主是 DSH `0.2.1-rc.5` 和 `0.2.2-alpha.2`；`engines.dsh` 只接受这两个版本。0.7.0 起使用桥接协议 v2；0.8.5 起协商可选能力（例如显式取消 `assignment-cancel`），旧宿主按能力降级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -29,7 +29,11 @@ dsh plugin add muche-dsh-plugin
 ## 使用
 
 1. 打开 dsh 设置 → 小沐，填后端地址和 API key（小沐后台生成），保存。
-2. 点左下角「小沐」开聊。输入框可用 `Ctrl+V` 粘贴剪贴板图片，和点「图」按钮选图一样进入预览、校验与发送；纯文本粘贴保留浏览器原行为。反向桥接配好 key 即在线，无需额外操作。
+2. 点击左下角「小沐」打开菜单，选择「显示小沐」；点击桌面立绘打开聊天，拖动立绘可调整位置。菜单中的「设置」打开 DSH 设置。非 Desktop 环境可通过菜单中的「打开聊天面板」进入聊天。
+3. 第一次显示时会下载 Electron 桌面组件。显示偏好与窗口位置保存在 `DSH_HOME/muche-desktop/state.json`（默认 `~/.dsh/muche-desktop/`），手动删除该目录可清除桌面组件缓存和位置偏好。聊天记录仍保存在后端。
+4. 输入框支持 `Ctrl+V` 粘贴剪贴板图片；反向桥接配好 key 后按连接状态启动。
+
+桌面立绘取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，素材限非商业使用；形象按 CC BY-NC-SA 4.0 授权，出处与署名见 [素材说明](desktop-helper/assets/README.md)。
 
 后端地址口径：填实际后端基址（如 `<公网基址>/api`）。插件不再补写、不再要求 `/api` 结尾、也不替用户判定地址形态——部署路径归项目决定，成不成立由「测试连接」的真实请求说了算。统一健康口 `GET /api/muche/health` 一次返回鉴权＋历史＋WS 三段结论，设置页「测试连接」可带候选值试连（不写回配置）。
 
@@ -91,7 +95,7 @@ dsh plugin remove 'muche-dsh-plugin'
 
 回答与追加的交付有独立尝试预算；原任务结束、交互超期或交付耗尽后，本地技术收口保留原决定和未知回执，resolver 关闭最多尝试一次，不等待离线宿主无限返回 ACK。未完成追加与恢复事实原子保存，正常等待用户不消耗交付次数。已结束问题的重复上报不会重新暂停后端执行计时。
 
-执行核按上游锁定的 `0.2.0-rc.2` 接口编写：进程内直调 `sessionController.create/prompt`（与人用客户端同一实现），回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
+执行核通过宿主 cohort 接口进程内直调 `sessionController.create/prompt`，回复走 `session/event` 事件订阅（`assistant/message` 累积文本，`turn/end` 按 `reason.kind` 判定完成）。`turn/end` 共六种终态（`completed/aborted/blocked/error/max-tokens/interrupted`），调用方按种收敛，不静默。
 
 执行前同时订阅 `agent/inbox/claimed`，按消息 rpcId 与所属 turn 绑定来源；上游 pre-step 在写入正文前拒绝或结束时仍保留实际终态，其他 turn 不结算当前任务，所有退出清理两类订阅。
 
@@ -103,13 +107,15 @@ dsh plugin remove 'muche-dsh-plugin'
 
 ```bash
 cd dsh && pnpm test   # 先 esbuild 打包 client 再跑全量，重启 Desktop 前必跑，全绿才动
+pnpm compat:check      # 下载并核对两个目标宿主的 API 契约
+pnpm desktop:smoke     # 启动真实桌面 helper，检查握手、截图和退出
 ```
 
 客户端改 `client/src/` 后禁手改 `client/client.js`（构建产物，`pnpm test` 自动重建）。
 
 ## 许可
 
-MIT
+插件代码按 [MIT](LICENSE) 授权；桌面立绘按 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 授权，禁止商用。见[素材来源说明](desktop-helper/assets/README.md)。
 
 原生提问输出使用宿主注册的 Schema 校验，选项标签/问题 ID/多选条件完整保留；
 模型可空 custom 在桥接前省略，空选表示明确跳过。限时提问到点只结束前台等待，

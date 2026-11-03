@@ -73,7 +73,7 @@ test('a duplicate mount leaves the primary fiber as the only owner of every rout
   const primary = hostCtx({ configNs: 'muche', server })
   apply(primary, config({ backendUrl: 'https://primary.test', apiKey: 'primary-key' }))
   assert.deepEqual([...primary.routes.keys()].sort(), [
-    'exact /api/muche/chat', 'exact /api/muche/events', 'exact /api/muche/health',
+    'exact /api/muche/chat', 'exact /api/muche/desktop', 'exact /api/muche/desktop-chat', 'exact /api/muche/desktop-chat.js', 'exact /api/muche/events', 'exact /api/muche/health',
     'exact /api/muche/history', 'exact /api/muche/image', 'exact /api/muche/runtime',
   ])
   const primarySnapshot = await invoke(primary, '/api/muche/runtime')
@@ -104,7 +104,7 @@ test('degraded registration is atomic: a later duplicate cannot leave earlier ro
 test('dispose removes every route, subscription and connection owned by this fiber', async () => {
   const ctx = hostCtx()
   apply(ctx, config({ backendUrl: 'https://dispose.test', apiKey: 'k' }))
-  assert.equal(ctx.routes.size, 6, 'every plugin route is registered by this fiber')
+  assert.equal(ctx.routes.size, 9, 'every plugin route is registered by this fiber')
   assert.ok(ctx.countListeners('loader/volatile-update') >= 1)
   ctx.emit('dispose')
   assert.equal(ctx.routes.size, 0)

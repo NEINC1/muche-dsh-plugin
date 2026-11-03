@@ -176,12 +176,146 @@
     return fromItems.length ? fromItems : Array.from(clipboard.files || []).filter((file) => String(file.type || "").startsWith("image/"));
   }
 
+  // client/src/voice.js
+  var VOICE_SAMPLE_RATE = 16e3;
+  var HEADER_BYTES = 44;
+  function downmix(channels) {
+    const list = (channels || []).filter((channel) => channel && channel.length);
+    if (!list.length) return new Float32Array(0);
+    if (list.length === 1) return list[0];
+    const length = Math.min(...list.map((channel) => channel.length));
+    const mixed = new Float32Array(length);
+    for (let i = 0; i < length; i += 1) {
+      let sum = 0;
+      for (const channel of list) sum += channel[i];
+      mixed[i] = sum / list.length;
+    }
+    return mixed;
+  }
+  function resample(samples, inputRate, targetRate = VOICE_SAMPLE_RATE) {
+    if (!Number.isFinite(inputRate) || inputRate <= 0) throw new TypeError("invalid input sample rate");
+    if (!Number.isFinite(targetRate) || targetRate <= 0) throw new TypeError("invalid target sample rate");
+    if (inputRate === targetRate || samples.length === 0) return samples;
+    const ratio = inputRate / targetRate;
+    const length = Math.max(1, Math.round(samples.length / ratio));
+    const out = new Float32Array(length);
+    for (let i = 0; i < length; i += 1) {
+      const position = i * ratio;
+      const index = Math.floor(position);
+      const fraction = position - index;
+      const current = samples[index] ?? 0;
+      const next = samples[index + 1] ?? current;
+      out[i] = current + (next - current) * fraction;
+    }
+    return out;
+  }
+  function encodeWavPcm16(samples, sampleRate = VOICE_SAMPLE_RATE) {
+    if (!Number.isFinite(sampleRate) || sampleRate <= 0) throw new TypeError("invalid sample rate");
+    const dataBytes = samples.length * 2;
+    const buffer = new ArrayBuffer(HEADER_BYTES + dataBytes);
+    const view = new DataView(buffer);
+    const writeAscii = (offset, text) => {
+      for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+    writeAscii(0, "RIFF");
+    view.setUint32(4, 36 + dataBytes, true);
+    writeAscii(8, "WAVE");
+    writeAscii(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeAscii(36, "data");
+    view.setUint32(40, dataBytes, true);
+    for (let i = 0; i < samples.length; i += 1) {
+      const clamped = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(HEADER_BYTES + i * 2, clamped < 0 ? clamped * 32768 : clamped * 32767, true);
+    }
+    return new Uint8Array(buffer);
+  }
+  function toBase64(bytes) {
+    let binary = "";
+    const chunk = 32768;
+    for (let offset = 0; offset < bytes.length; offset += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunk));
+    }
+    return btoa(binary);
+  }
+  function encodeRecording({ chunks, sampleRate }) {
+    const merged = new Float32Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return toBase64(encodeWavPcm16(resample(merged, sampleRate)));
+  }
+
+  // client/src/settings-entry.js
+  var SETTINGS_TRIGGER = /设置|settings|preferences/i;
+  var ACCOUNT_MENU = /账号菜单|account menu/i;
+  var ANY_MENU = /更多|more|菜单|menu/i;
+  var TRANSITION_CLASS = "muche-settings-transition";
+  var PANEL_SELECTOR = '[data-shortcut-modal="settings"]';
+  var isSettingsItem = (text) => /^设置/.test(text) || /^settings\b/i.test(text);
+  var labelOf = (node) => `${node.getAttribute("aria-label") || ""} ${node.textContent || ""}`;
+  var isOwn = (node) => typeof node.closest === "function" && node.closest("[data-muche-menu], [data-muche-entry]") !== null;
+  var settingsItem = (document2) => Array.from(document2.querySelectorAll('[role="menuitem"]')).find((node) => !isOwn(node) && isSettingsItem((node.textContent || "").trim()));
+  async function waitFor(read, timeoutMs, pollMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (; ; ) {
+      const value = read();
+      if (value || Date.now() >= deadline) return value;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+  async function openViaLauncher({ document: document2, timeoutMs, pollMs }) {
+    const triggers = Array.from(document2.querySelectorAll("[aria-haspopup]")).filter((node) => !isOwn(node));
+    const of = (popup, pattern) => triggers.filter((node) => node.getAttribute("aria-haspopup") === popup && pattern.test(labelOf(node)));
+    const direct = of("dialog", SETTINGS_TRIGGER)[0];
+    if (direct) {
+      direct.click();
+      return "dialog";
+    }
+    const menus = [...of("menu", ACCOUNT_MENU), ...of("menu", ANY_MENU).filter((node) => !ACCOUNT_MENU.test(labelOf(node)))];
+    for (const menu of menus) {
+      if (menu.getAttribute("aria-expanded") !== "true") menu.click();
+      const item = await waitFor(() => settingsItem(document2), Math.min(timeoutMs, 600), pollMs);
+      if (item) {
+        item.click();
+        return "menu";
+      }
+      if (menu.getAttribute("aria-expanded") === "true") menu.click();
+    }
+    return "none";
+  }
+  async function openDshSettings({ document: document2, section = "", timeoutMs = 1500, pollMs = 20 } = {}) {
+    if (!document2 || typeof document2.querySelectorAll !== "function") return "none";
+    const root = document2.documentElement;
+    root?.classList.add(TRANSITION_CLASS);
+    try {
+      const via = await openViaLauncher({ document: document2, timeoutMs, pollMs });
+      if (via === "none" || !section) return via;
+      const panel = await waitFor(() => document2.querySelector(PANEL_SELECTOR), Math.min(timeoutMs, 800), pollMs);
+      if (panel) {
+        const target = Array.from(panel.querySelectorAll("nav button")).find((node) => (node.textContent || "").trim() === section);
+        if (target) target.click();
+      }
+      return via;
+    } finally {
+      root?.classList.remove(TRANSITION_CLASS);
+    }
+  }
+
   // lib/runtime-contract.js
   function sameRuntimeContext(a, b) {
     return !!a && !!b && a.runtimeId === b.runtimeId && a.configNs === b.configNs && a.generation === b.generation;
   }
   function isRuntimeSnapshot(value) {
-    return value?.schema === 1 && typeof value.runtimeId === "string" && !!value.runtimeId && typeof value.configNs === "string" && !!value.configNs && Number.isSafeInteger(value.generation) && value.generation >= 0 && Number.isSafeInteger(value.seq) && value.seq >= 0 && ["connecting", "online", "offline"].includes(value.chat?.phase) && !!value.configuration && !!value.bridge;
+    return value?.schema === 1 && typeof value.runtimeId === "string" && !!value.runtimeId && typeof value.configNs === "string" && !!value.configNs && Number.isSafeInteger(value.generation) && value.generation >= 0 && Number.isSafeInteger(value.seq) && value.seq >= 0 && ["connecting", "online", "offline"].includes(value.chat?.phase) && !!value.configuration && !!value.bridge && (value.desktop === void 0 || value.desktop !== null && typeof value.desktop === "object" && typeof value.desktop.available === "boolean" && ["unavailable", "idle", "starting", "visible", "stopping", "failed"].includes(value.desktop.state) && typeof value.desktop.visible === "boolean" && typeof value.desktop.code === "string" && typeof value.desktop.text === "string" && typeof value.desktop.progress === "string");
   }
   function projectClientRuntime(snapshot, delivery) {
     const phase = delivery.status === "offline" || snapshot?.chat.phase === "offline" ? "offline" : snapshot?.chat.phase === "online" && delivery.synced ? "online" : "connecting";
@@ -453,19 +587,24 @@
   // client/src/entry.js
   var VISION_PREFLIGHT_MAX_IMAGES = 3;
   var VISION_PREFLIGHT_MAX_BYTES = 8 * 1024 * 1024;
-  window.__ModuleLoader__.load({
+  var MIN_VOICE_MS = 400;
+  var clientDefinition = {
     id: "muche-dsh-plugin",
     factory: (require2) => {
       var module = { exports: {} };
       var exports = module.exports;
       let React = require2("react");
       const h = React.createElement;
+      const desktopChat = window.mucheDesktopChat?.active === true;
+      const SETTINGS_SECTION = "小沐";
       const CSS = `
       .muche-settings-entry{background:0 0}
       .muche-settings-entry:hover{background:var(--dsw-alias-interactive-bg-hover)}
       .muche-field{box-sizing:border-box;width:100%;height:34px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px}
       .muche-field:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
       .muche-btn{box-sizing:border-box;height:32px;padding:0 14px;border:none;border-radius:8px;background:var(--dsw-alias-state-business-primary);color:#fff;font:inherit;font-size:13px;cursor:pointer}
+      /* 官方设置入口是账号菜单里的一项；过渡期间把那个菜单藏起来，别让用户看到"先弹一下再进设置" */
+      html.muche-settings-transition [role="menu"]:not([data-muche-menu]){visibility:hidden}
     `;
       if (typeof document !== "undefined") {
         const tag = document.createElement("style");
@@ -474,7 +613,7 @@
         document.head.appendChild(tag);
       }
       const panelStore = {
-        open: false,
+        open: desktopChat,
         unread: 0,
         subs: [],
         toggle() {
@@ -483,10 +622,19 @@
           for (const f of this.subs) f();
         },
         close() {
+          if (desktopChat) {
+            window.mucheDesktopChat.close();
+            return;
+          }
           if (this.open) {
             this.open = false;
             for (const f of this.subs) f();
           }
+        },
+        openPanel() {
+          this.open = true;
+          this.unread = 0;
+          for (const f of this.subs) f();
         },
         bumpUnread() {
           if (!this.open) {
@@ -511,6 +659,33 @@
         const [open, setOpen] = React.useState(panelStore.open);
         React.useEffect(() => panelStore.subscribe(() => setOpen(panelStore.open)), []);
         return open;
+      }
+      const menuStore = {
+        open: false,
+        anchor: null,
+        subs: [],
+        set(open, anchor) {
+          this.open = open;
+          this.anchor = open ? anchor : null;
+          for (const f of this.subs) f();
+        },
+        toggle(anchor) {
+          this.set(!this.open, anchor);
+        },
+        close() {
+          if (this.open) this.set(false, null);
+        },
+        subscribe(f) {
+          this.subs.push(f);
+          return () => {
+            this.subs = this.subs.filter((x) => x !== f);
+          };
+        }
+      };
+      function useMenu() {
+        const [value, setValue] = React.useState({ open: menuStore.open, anchor: menuStore.anchor });
+        React.useEffect(() => menuStore.subscribe(() => setValue({ open: menuStore.open, anchor: menuStore.anchor })), []);
+        return value;
       }
       const runtimeStore = createRuntimeClient();
       function useRuntime() {
@@ -572,14 +747,22 @@
       }
       function MucheEntry({ wide }) {
         const open = usePanelOpen();
+        const menu = useMenu();
         const unread = useUnread();
+        const toggleMenu = (event) => {
+          const r = event.currentTarget.getBoundingClientRect();
+          menuStore.toggle({ left: r.left, top: r.top, width: r.width, height: r.height });
+        };
         const entryTitle = open ? "小沐面板已打开" : unread > 0 ? `小沐有 ${unread} 条未读` : "打开小沐";
         if (!wide) {
           return h(
             "button",
             {
               type: "button",
-              onClick: () => panelStore.toggle(),
+              onClick: toggleMenu,
+              "data-muche-entry": "",
+              "aria-haspopup": "menu",
+              "aria-expanded": menu.open,
               title: entryTitle,
               className: "muche-settings-entry",
               style: {
@@ -608,7 +791,10 @@
           "button",
           {
             type: "button",
-            onClick: () => panelStore.toggle(),
+            onClick: toggleMenu,
+            "data-muche-entry": "",
+            "aria-haspopup": "menu",
+            "aria-expanded": menu.open,
             title: entryTitle,
             className: "muche-settings-entry",
             style: {
@@ -637,6 +823,62 @@
           unread > 0 ? h("span", { style: { position: "absolute", top: 6, right: 8, minWidth: 14, height: 14, padding: "0 4px", borderRadius: 7, background: "var(--dsw-alias-state-error-primary)", color: "#fff", fontSize: 10, lineHeight: "14px", textAlign: "center" } }, unread > 99 ? "99+" : String(unread)) : null
         );
       }
+      function MucheMenu() {
+        const menu = useMenu(), runtime = useRuntime();
+        const desktop = runtime?.snapshot?.desktop;
+        const menuRef = React.useRef(null);
+        React.useEffect(() => {
+          if (!menu.open) return;
+          const onKey = (event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              menuStore.close();
+            }
+          };
+          document.addEventListener("keydown", onKey, true);
+          return () => document.removeEventListener("keydown", onKey, true);
+        }, [menu.open]);
+        React.useEffect(() => {
+          if (menu.open) menuRef.current?.querySelector('[role="menuitem"]:not([disabled])')?.focus();
+        }, [menu.open]);
+        if (!menu.open || !menu.anchor) return null;
+        const available = desktop?.available === true;
+        const busy = ["starting", "stopping"].includes(desktop?.state);
+        const action = desktop?.state === "visible" ? "hide" : desktop?.state === "failed" ? "retry" : "show";
+        const label = desktop?.state === "visible" ? "隐藏小沐" : desktop?.state === "failed" ? "重试显示" : desktop?.state === "starting" ? "正在显示…" : desktop?.state === "stopping" ? "正在隐藏…" : "显示小沐";
+        const row = (key, text, onClick, disabled = false) => h("button", {
+          key,
+          type: "button",
+          role: "menuitem",
+          disabled,
+          onClick,
+          style: { display: "block", width: "100%", padding: "8px 10px", border: 0, borderRadius: 8, background: "transparent", color: "var(--dsw-alias-label-primary)", textAlign: "left", cursor: disabled ? "default" : "pointer" }
+        }, text);
+        const children = [
+          row("settings", "设置", () => {
+            menuStore.close();
+            void openDshSettings({ document, section: SETTINGS_SECTION }).then((via) => {
+              if (via === "none") console.warn("muche menu: settings entry unavailable");
+            });
+          }),
+          row("desktop", label, () => {
+            menuStore.close();
+            void runtimeRequest("/api/muche/desktop", { action });
+          }, !available || busy)
+        ];
+        if (desktop?.text || desktop?.progress) children.push(h("div", { key: "status", style: { padding: "4px 10px", fontSize: 11 } }, desktop.progress || desktop.text));
+        if (!available) children.push(row("chat", "打开聊天面板", () => {
+          menuStore.close();
+          panelStore.openPanel();
+        }));
+        return h(
+          React.Fragment,
+          null,
+          h("div", { onClick: () => menuStore.close(), style: { position: "fixed", inset: 0, zIndex: 1199, background: "transparent" } }),
+          h("div", { ref: menuRef, role: "menu", "aria-label": "小沐", "data-muche-menu": "", style: { position: "fixed", left: Math.max(8, Math.min(menu.anchor.left, window.innerWidth - 216)), bottom: window.innerHeight - menu.anchor.top + 8, width: 208, zIndex: 1200, background: "var(--dsw-alias-bg-base)", border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 12, padding: 6 } }, children)
+        );
+      }
       function ChatPanel() {
         const open = usePanelOpen();
         const runtime = useRuntime();
@@ -647,6 +889,8 @@
         const [olderCursor, setOlderCursor] = React.useState(null);
         const [loadingOlder, setLoadingOlder] = React.useState(false);
         const [input, setInput] = React.useState("");
+        const [voiceState, setVoiceState] = React.useState("idle");
+        const voiceRef = React.useRef(null);
         const [thinking, setThinking] = React.useState(false);
         const [pendingImages, setPendingImages] = React.useState([]);
         const fileRef = React.useRef(null);
@@ -670,6 +914,7 @@
           setMsgs(renderMerged(baseRef.current));
         };
         const noticesRef = React.useRef(/* @__PURE__ */ new Map());
+        const voiceClipsRef = React.useRef(/* @__PURE__ */ new Map());
         const quotaUntilRef = React.useRef(0);
         const setQuota = (ms) => {
           quotaUntilRef.current = ms;
@@ -772,6 +1017,22 @@
           const kept = overlayRef.current.filter((o) => !overlayCovered(o, base));
           if (kept.length !== overlayRef.current.length) overlayRef.current = kept;
         };
+        const updateOverlay = (mid, patch) => {
+          let changed = false;
+          for (const row of overlayRef.current) if (row.mid === mid) {
+            Object.assign(row, patch);
+            changed = true;
+          }
+          if (changed) setMsgs(renderMerged(baseRef.current));
+        };
+        const playVoice = (audio) => {
+          if (!audio || typeof Audio === "undefined") return;
+          try {
+            new Audio("data:audio/wav;base64," + audio).play().catch(() => {
+            });
+          } catch {
+          }
+        };
         const handleHttpReply = (res, nowIso, mid) => {
           if (res?.stale) return;
           settleInflight(mid);
@@ -780,7 +1041,12 @@
             return;
           }
           if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current));
-          const parts = (res.messages || []).map((t) => ({ role: "assistant", content: String(t), inner_thought: res.inner_thought || "", ts: nowIso }));
+          if (res.transcript) updateOverlay(mid, { content: res.transcript });
+          if (res.audio) {
+            voiceClipsRef.current.set(mid, res.audio);
+            playVoice(res.audio);
+          }
+          const parts = (res.messages || []).map((t) => ({ role: "assistant", content: String(t), inner_thought: res.inner_thought || "", ts: nowIso, voice: Boolean(res.audio), voiceKey: res.audio ? mid : "" }));
           if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
             reportFailure(failureNotice(), { operation: "message", ts: nowIso, mid });
           } else if (parts.length > 0) overlayAdd(parts);
@@ -1051,6 +1317,22 @@
             reportFailure({ kind: "operation", text: "加载更早的消息失败，请重试" }, { operation: "history" });
           });
         };
+        const postChat = ({ text = "", images = [], audio = "", optimisticText = "" }) => {
+          if (!runtimeStore.context()) return false;
+          if (quotaUntilRef.current > Date.now()) return false;
+          const nowIso = typeof Date !== "undefined" ? (/* @__PURE__ */ new Date()).toISOString() : "";
+          const mid = runtimeStore.newId("m");
+          overlayAdd([{ role: "user", content: optimisticText, inner_thought: "", ts: nowIso, previews: images, mid, medium: audio ? "voice" : "text" }]);
+          setThinking(true);
+          inflightRef.current.add(mid);
+          runtimeRequest("/api/muche/chat", {
+            text,
+            message_id: mid,
+            images: images.length ? images : void 0,
+            audio: audio || void 0
+          }).then((res) => handleHttpReply(res, nowIso, mid));
+          return true;
+        };
         const send = () => {
           const text = input.trim();
           const images = pendingImages.slice(0, VISION_PREFLIGHT_MAX_IMAGES);
@@ -1060,12 +1342,7 @@
           setInput("");
           setPendingImages([]);
           setInline((current) => current?.operation === "input" ? null : current);
-          const nowIso = typeof Date !== "undefined" ? (/* @__PURE__ */ new Date()).toISOString() : "";
-          const mid = runtimeStore.newId("m");
-          overlayAdd([{ role: "user", content: text, inner_thought: "", ts: nowIso, previews: images, mid }]);
-          setThinking(true);
-          inflightRef.current.add(mid);
-          runtimeRequest("/api/muche/chat", { text, message_id: mid, images: images.length ? images : void 0 }).then((res) => handleHttpReply(res, nowIso, mid));
+          postChat({ text, images, optimisticText: text });
           if (inputRef.current && typeof inputRef.current.focus === "function") inputRef.current.focus();
         };
         const bubble = (m, i, showTime) => {
@@ -1132,7 +1409,27 @@
                     background: mine ? "var(--dsw-alias-state-business-primary)" : "var(--dsw-alias-button-ghost-active-fill)",
                     color: mine ? "#fff" : "var(--dsw-alias-label-primary)"
                   }
-                }, m.content) : null
+                }, m.content) : null,
+                // 语音轮：这条回复是语音，给一个可重播的标记（自动直放之外，用户还能再听一遍）。
+                m.voice ? h("button", {
+                  type: "button",
+                  "aria-label": "重播这条语音",
+                  title: "重播这条语音",
+                  onClick: () => playVoice(voiceClipsRef.current.get(m.voiceKey)),
+                  style: {
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    marginLeft: m.content ? 6 : 0,
+                    padding: "4px 8px",
+                    border: "1px solid var(--dsw-alias-border-l1)",
+                    borderRadius: 10,
+                    background: "transparent",
+                    color: "var(--dsw-alias-label-secondary)",
+                    fontSize: 12,
+                    cursor: "pointer"
+                  }
+                }, "🔊 语音") : null
               )
             )
           );
@@ -1156,6 +1453,119 @@
             rows.push(h("div", { key, role: "status", style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 8 } }, m.content));
           } else rows.push(bubble(m, key, showTime));
         }
+        const releaseVoice = () => {
+          const session = voiceRef.current;
+          voiceRef.current = null;
+          if (!session) return null;
+          try {
+            session.processor.disconnect();
+          } catch {
+          }
+          try {
+            session.source.disconnect();
+          } catch {
+          }
+          try {
+            session.gain.disconnect();
+          } catch {
+          }
+          for (const track of session.stream.getTracks()) track.stop();
+          Promise.resolve(session.context.close()).catch(() => {
+          });
+          return session;
+        };
+        const cancelVoice = () => {
+          releaseVoice();
+          setVoiceState("idle");
+        };
+        const startVoice = async () => {
+          if (voiceRef.current) return;
+          const media = typeof navigator !== "undefined" ? navigator.mediaDevices : void 0;
+          if (!media || typeof media.getUserMedia !== "function") {
+            setInline({ kind: "operation", text: "当前环境无法录音" });
+            return;
+          }
+          try {
+            const stream = await media.getUserMedia({ audio: true });
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            const context = new AudioContextCtor();
+            const source = context.createMediaStreamSource(stream);
+            const processor = context.createScriptProcessor(4096, 1, 1);
+            const gain = context.createGain();
+            gain.gain.value = 0;
+            const chunks = [];
+            processor.onaudioprocess = (event) => {
+              const buffer = event.inputBuffer;
+              const channels = [];
+              for (let c = 0; c < buffer.numberOfChannels; c += 1) channels.push(new Float32Array(buffer.getChannelData(c)));
+              chunks.push(downmix(channels));
+            };
+            source.connect(processor);
+            processor.connect(gain);
+            gain.connect(context.destination);
+            voiceRef.current = { stream, context, source, processor, gain, chunks, sampleRate: context.sampleRate };
+            setVoiceState("recording");
+          } catch (error) {
+            setInline({ kind: "operation", text: "无法使用麦克风，请检查系统权限" });
+            setVoiceState("idle");
+          }
+        };
+        const sendVoice = () => {
+          const session = releaseVoice();
+          setVoiceState("idle");
+          if (!session) return;
+          const samples = session.chunks.reduce((total, chunk) => total + chunk.length, 0);
+          const durationMs = session.sampleRate > 0 ? samples / session.sampleRate * 1e3 : 0;
+          if (!samples) {
+            setInline({ kind: "operation", text: "没有录到声音，请重试" });
+            return;
+          }
+          if (durationMs < MIN_VOICE_MS) {
+            setInline({ kind: "operation", text: "说话太短，这条没有发送" });
+            return;
+          }
+          const sent = postChat({ audio: encodeRecording({ chunks: session.chunks, sampleRate: session.sampleRate }), optimisticText: "🎤 语音" });
+          if (!sent) setInline({ kind: "operation", text: "还没有连上小沐，这条语音没发出去" });
+        };
+        React.useEffect(() => {
+          const bridge = window.mucheDesktopChat;
+          if (!bridge?.onVoiceCommand) return void 0;
+          return bridge.onVoiceCommand((payload) => {
+            const command = payload && typeof payload === "object" ? payload.command : payload;
+            if (command === "voice-start") {
+              void startVoice();
+              return;
+            }
+            if (command === "voice-stop") {
+              sendVoice();
+              return;
+            }
+            if (command === "voice-cancel") cancelVoice();
+          });
+        }, []);
+        React.useEffect(() => {
+          window.mucheDesktopChat?.reportVoiceState?.(voiceState);
+        }, [voiceState]);
+        React.useEffect(() => {
+          if (!open) return;
+          const onKey = (event) => {
+            if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            if (event.code === "KeyQ") {
+              event.preventDefault();
+              event.stopPropagation();
+              if (voiceRef.current) sendVoice();
+              else void startVoice();
+              return;
+            }
+            if (event.code === "KeyZ" && voiceRef.current) {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelVoice();
+            }
+          };
+          window.addEventListener("keydown", onKey, true);
+          return () => window.removeEventListener("keydown", onKey, true);
+        }, [open]);
         if (!open) return null;
         const onDragStart = (e) => {
           const panel = panelRef.current;
@@ -1175,7 +1585,7 @@
         const onDragEnd = () => {
           dragRef.current = null;
         };
-        const dragHandle = {
+        const dragHandle = desktopChat ? {} : {
           onPointerDown: onDragStart,
           onPointerMove: onDragMove,
           onPointerUp: onDragEnd,
@@ -1185,17 +1595,18 @@
           "div",
           {
             ref: panelRef,
+            "data-muche-desktop-chat": desktopChat ? "" : void 0,
             style: {
               position: "fixed",
-              ...pos ? { left: pos.left, top: pos.top } : { right: 24, bottom: 24 },
+              ...desktopChat ? { inset: 0 } : pos ? { left: pos.left, top: pos.top } : { right: 24, bottom: 24 },
               zIndex: 1200,
-              width: 380,
-              height: 560,
+              width: desktopChat ? "100%" : 380,
+              height: desktopChat ? "100%" : 560,
               display: "flex",
               flexDirection: "column",
               background: "var(--dsw-alias-bg-base)",
-              border: "1px solid var(--dsw-alias-border-l1)",
-              borderRadius: 16,
+              border: desktopChat ? "none" : "1px solid var(--dsw-alias-border-l1)",
+              borderRadius: desktopChat ? 0 : 16,
               boxShadow: "var(--dsw-shadow-lv2)",
               overflow: "hidden",
               pointerEvents: "auto"
@@ -1211,7 +1622,7 @@
                 gap: 8,
                 padding: "10px 14px",
                 borderBottom: "1px solid var(--dsw-alias-border-l2)",
-                cursor: "grab",
+                cursor: desktopChat ? "default" : "grab",
                 userSelect: "none",
                 touchAction: "none"
               }
@@ -1233,6 +1644,7 @@
             }, runtime.label),
             h("button", {
               type: "button",
+              "aria-label": "关闭聊天",
               onClick: () => panelStore.close(),
               onPointerDown: (e) => e.stopPropagation(),
               style: { marginLeft: "auto", cursor: "pointer", background: "none", border: "none", color: "var(--dsw-alias-label-secondary)", fontSize: 16, padding: "2px 6px" }
@@ -1282,6 +1694,10 @@
             { style: { padding: "6px 12px", fontSize: 12, color: "var(--dsw-alias-state-error-primary)" } },
             "消息额度已用完，" + (localHM(new Date(quotaUntil).toISOString()) || "稍后") + " 后恢复"
           ) : null,
+          voiceState === "recording" ? h("div", {
+            role: "status",
+            style: { padding: "6px 12px", fontSize: 12, color: "var(--dsw-alias-state-business-primary)" }
+          }, "正在听… Alt+Q 结束并发送，Alt+Z 取消") : null,
           h(
             "div",
             { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid var(--dsw-alias-border-l2)" } },
@@ -1305,6 +1721,16 @@
               },
               disabled: quotaUntil > Date.now()
             }, "图"),
+            h("button", {
+              type: "button",
+              className: "muche-btn",
+              title: voiceState === "recording" ? "结束并发送（Alt+Q）" : "语音输入（Alt+Q 开始，Alt+Z 取消）",
+              onClick: () => {
+                if (voiceState === "recording") sendVoice();
+                else void startVoice();
+              },
+              disabled: quotaUntil > Date.now()
+            }, voiceState === "recording" ? "停" : "麦"),
             h("input", {
               ref: inputRef,
               className: "muche-field",
@@ -1566,7 +1992,7 @@
           if (document.visibilityState === "visible") runtimeStore.ensureConnected();
         };
         document.addEventListener("visibilitychange", onVisible);
-        ctx.on("dispose", () => {
+        ctx.effect(() => () => {
           offBinding();
           runtimeStore.dispose();
           document.removeEventListener("visibilitychange", onVisible);
@@ -1581,14 +2007,20 @@
           { name: "shell.overlay", id: "muche-chat-panel", order: 5, label: "小沐聊天" },
           () => h(ChatPanel)
         ));
+        slots.inject("shell.overlay", () => slots.register(
+          { name: "shell.overlay", id: "muche-menu", order: 6, label: "小沐菜单" },
+          () => h(MucheMenu)
+        ));
         slots.inject("settings.section", () => slots.register(
-          { name: "settings.section", id: "muche", order: 30, label: "小沐" },
+          { name: "settings.section", id: "muche", order: 30, label: SETTINGS_SECTION },
           () => h(MucheSettingsSection)
         ));
       }
       exports.apply = apply;
       exports.inject = ["slots", "configForms"];
+      exports.desktopView = { ChatPanel, start: () => runtimeStore.start(), dispose: () => runtimeStore.dispose() };
       return module.exports;
     }
-  });
+  };
+  if (window.__ModuleLoader__) window.__ModuleLoader__.load(clientDefinition);
 })();

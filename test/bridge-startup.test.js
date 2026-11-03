@@ -69,6 +69,8 @@ function bridgeCtx({ backendUrl = '', apiKey = 'k-test', withDeps = true } = {})
       if (ev === 'dispose') disposeFns.push(fn)
       return () => {}
     },
+    // The bridge releases itself through the fiber effect, matching the real Cordis lifecycle.
+    effect: (setup) => { const dispose = setup(); if (typeof dispose === 'function') disposeFns.push(dispose) },
     get: (name) => ctx[name],
     _config: config,
     _dispose: disposeFns,

@@ -52,6 +52,8 @@ async function fixture({ timed = false } = {}) {
       else waterfall[name] = fn
       return () => { delete waterfall[name] }
     },
+    // The bridge releases itself through the fiber effect, matching the real Cordis lifecycle.
+    effect: (setup) => { const dispose = setup(); if (typeof dispose === 'function') disposers.push(dispose) },
   }
   const config = { backendUrl: `http://127.0.0.1:${wss.address().port}`, apiKey: 'test-only', workspacePath: directory, bridgeId: randomUUID() }
   const runtime = createRuntimeState({ configNs: 'bridge-ws-test' })

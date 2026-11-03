@@ -27,6 +27,9 @@ function fixture(t, { config = { ...CFG }, withDeps = true, retryDelays = [5, 10
       listeners.get(name).add(listener)
       return () => { listeners.get(name)?.delete(listener); if (listeners.get(name)?.size === 0) listeners.delete(name) }
     },
+    // Fiber lifecycle: the bridge registers its cleanup as an effect (Cordis has no 'dispose' event).
+    effect(setup) { const dispose = setup(); if (typeof dispose === 'function') this.effects.push(dispose) },
+    effects: [],
   }
   const bridge = registerDshBridge(ctx, config, {
     getContext: runtime.context,
@@ -327,7 +330,9 @@ test('dispose 清依赖 timer/事件/global fiber；迟到 identity 不接线', 
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const before = getDshBridgeStatus().fibers.length
   const waiting = fixture(t, { withDeps: false })
-  assert.equal(waiting.listeners.size, 4)
+  // Three event subscriptions (approval/request, user-questions/request, session/event); the
+  // lifecycle cleanup itself is a fiber effect, not a fourth listener.
+  assert.equal(waiting.listeners.size, 3)
   waiting.bridge.dispose(); waiting.bridge.dispose()
   assert.equal(waiting.listeners.size, 0)
   const count = waiting.observations.length

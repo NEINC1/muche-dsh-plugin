@@ -1,7 +1,7 @@
 {
   "name": "muche-dsh-plugin",
-  "version": "0.8.2",
-  "description": "连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务",
+  "version": "0.8.5",
+  "description": "连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务；桌面端支持左下角菜单与桌面悬浮小沐",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -13,6 +13,7 @@
   "files": [
     "lib",
     "client",
+    "desktop-helper",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -26,21 +27,30 @@
         "@deepseek-ai/dsh-client-ui-renderer"
       ],
       "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.5": "compatible",
+        "0.2.2-alpha.2": "compatible"
+      }
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
-    "@deepseek-ai/schemastery": ">=3.18.4"
+    "@deepseek-ai/cordis": ">=4.0.4-0 <5.0.0",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5 || 0.2.2-alpha.2",
+    "@deepseek-ai/schemastery": ">=3.18.4-0 <4.0.0"
   },
   "dependencies": {
-    "undici": "^7.30.0",
+    "@electron/get": "^5.1.0",
+    "undici": "^7.30.1",
     "ws": "^8.21.3"
   },
   "scripts": {
-    "build": "esbuild client/src/entry.js --bundle --platform=browser --format=iife --charset=utf8 --outfile=client/client.js --log-level=warning",
-    "test": "npm run build && node --test test/*.test.js"
+    "build": "esbuild client/src/entry.js --bundle --platform=browser --format=iife --charset=utf8 --outfile=client/client.js --log-level=warning && esbuild client/src/desktop-chat-entry.js --bundle --platform=browser --format=iife --charset=utf8 --outfile=client/desktop-chat.js --log-level=warning --minify",
+    "test": "npm run build && node --test test/*.test.js",
+    "compat:check": "node scripts/check-cohort-compat.mjs",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs"
   },
   "keywords": [
     "dsh",
@@ -51,20 +61,21 @@
   ],
   "engines": {
     "node": ">=22",
-    "dsh": "0.2.0-rc.2"
+    "dsh": "0.2.1-rc.5 || 0.2.2-alpha.2"
   },
-  "license": "MIT",
+  "license": "(MIT AND CC-BY-NC-SA-4.0)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NEINC1/muche-dsh-plugin.git"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tool-ask-user": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tool-ask-user": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.2.2-alpha.2",
     "esbuild": "^0.28.2",
-    "happy-dom": "20.10.6",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "happy-dom": "21.0.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "semver": "^7.7.2"
   }
 }

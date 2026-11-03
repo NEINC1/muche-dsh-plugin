@@ -1,0 +1,9 @@
+{
+  "protocol": 1,
+  "app": "muche-desktop-helper",
+  "maxLineBytes": 65536,
+  "messages": {
+    "helperToHost": ["hello", "ready", "shown", "clicked", "moved", "error", "chat-error", "pong", "smoke", "chat-smoke", "chat-url-request"],
+    "hostToHelper": ["init", "show", "open-chat", "chat-url", "shutdown", "ping"]
+  }
+}

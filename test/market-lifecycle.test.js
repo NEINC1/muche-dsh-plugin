@@ -56,6 +56,7 @@ test('桥接缺依赖时停用不抛（面板照常）', async () => {
   const fakeCtx = {
     get: () => undefined,
     on: () => () => {},
+    effect: () => {},
   }
   const config = { backendUrl: 'http://127.0.0.1:8000', apiKey: '', workspacePath: '' }
   assert.doesNotThrow(() => registerDshBridge(fakeCtx, config), '缺依赖的 profile 上 registerDshBridge 不应抛')
