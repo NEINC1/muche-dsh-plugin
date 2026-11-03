@@ -1805,7 +1805,17 @@
                   "div",
                   { key: item.input_id, style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } },
                   (item.state_label || "") + "：" + (item.text || "")
-                )) : h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } }, "暂无追加输入")
+                )) : h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } }, "暂无追加输入"),
+                (task.assignments || []).length ? h(
+                  "div",
+                  { style: { marginTop: 3 } },
+                  h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } }, "执行记录"),
+                  task.assignments.map((run) => h(
+                    "div",
+                    { key: run.run_id, style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } },
+                    (run.status || "") + " · " + (run.summary || run.run_id)
+                  ))
+                ) : null
               ) : null
             )) : h("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)" } }, "暂无任务")
           ) : null,
