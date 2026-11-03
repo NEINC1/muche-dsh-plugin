@@ -1771,7 +1771,7 @@
                 key: task.task_id,
                 style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }
               },
-              h("span", { style: { minWidth: 52, fontSize: 11, color: "var(--dsw-alias-label-secondary)" } }, task.status_label || ""),
+              h("span", { style: { minWidth: 52, fontSize: 11, color: "var(--dsw-alias-label-secondary)" } }, task.report_label || task.status_label || ""),
               h("span", { title: task.goal, style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, task.goal || task.task_id),
               task.active ? h("button", {
                 type: "button",
