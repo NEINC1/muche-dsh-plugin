@@ -262,6 +262,7 @@ export const clientDefinition = {
       const [input, setInput] = React.useState('')
       const [tasks, setTasks] = React.useState([])
       const [tasksOpen, setTasksOpen] = React.useState(false)
+      const [expandedTask, setExpandedTask] = React.useState('')
       const loadTasks = React.useCallback(async () => {
         const res = await runtimeRequest('/api/muche/tasks')
         if (res?.ok) setTasks(Array.isArray(res.tasks) ? res.tasks : [])
@@ -269,7 +270,7 @@ export const clientDefinition = {
       React.useEffect(() => {
         if (!open) return undefined
         void loadTasks()
-        const timer = setInterval(() => { void loadTasks() }, 20000)
+        const timer = setInterval(() => { void loadTasks() }, 30000)
         return () => clearInterval(timer)
       }, [open, loadTasks])
       // 语音状态只用于提示与按钮文案；真正的录音会话在 voiceRef 里（Alt+Q/Alt+Z 直接读它）。
@@ -995,22 +996,42 @@ export const clientDefinition = {
             )
             : null,
         tasksOpen ? h('div', {
-          style: { flex: 'none', maxHeight: 190, overflowY: 'auto', padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
+          style: { flex: 'none', maxHeight: 240, overflowY: 'auto', padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
         },
-          tasks.length ? tasks.map((task) => h('div', {
-            key: task.task_id,
-            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', fontSize: 13 },
-          },
-            h('span', { style: { minWidth: 52, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, task.report_label || task.status_label || ''),
-            h('span', { title: task.goal, style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, task.goal || task.task_id),
-            task.active ? h('button', {
-              type: 'button',
-              onClick: async () => {
-                await runtimeRequest('/api/muche/tasks/stop', { task_id: task.task_id })
-                void loadTasks()
-              },
-              style: { cursor: 'pointer', background: 'none', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, padding: '1px 8px', fontSize: 11, color: 'var(--dsw-alias-state-error-primary)' },
-            }, '停止') : null,
+          tasks.length ? tasks.map((task) => h('div', { key: task.task_id, style: { padding: '4px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
+            h('div', {
+              onClick: () => setExpandedTask((current) => current === task.task_id ? '' : task.task_id),
+              style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' },
+            },
+              h('span', { style: { minWidth: 52, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, task.report_label || task.status_label || ''),
+              h('span', { title: task.goal, style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, task.goal || task.task_id),
+              task.active ? h('button', {
+                type: 'button',
+                onClick: async (event) => {
+                  event.stopPropagation()
+                  await runtimeRequest('/api/muche/tasks/stop', { task_id: task.task_id })
+                  void loadTasks()
+                },
+                style: { cursor: 'pointer', background: 'none', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, padding: '1px 8px', fontSize: 11, color: 'var(--dsw-alias-state-error-primary)' },
+              }, '停止') : null,
+              h('button', {
+                type: 'button',
+                onClick: async (event) => {
+                  event.stopPropagation()
+                  await runtimeRequest('/api/muche/chat', { text: '继续这个任务：' + (task.goal || task.task_id) })
+                  void loadTasks()
+                },
+                style: { cursor: 'pointer', background: 'none', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, padding: '1px 8px', fontSize: 11, color: 'var(--dsw-alias-state-business-primary)' },
+              }, '继续'),
+            ),
+            expandedTask === task.task_id ? h('div', { style: { padding: '4px 0 2px 60px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
+              h('div', { style: { marginBottom: 2 } }, task.goal || ''),
+              (task.inputs || []).length
+                ? task.inputs.map((item) => h('div', { key: item.input_id, style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } },
+                  (item.state_label || '') + '：' + (item.text || ''),
+                ))
+                : h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } }, '暂无追加输入'),
+            ) : null,
           )) : h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, '暂无任务'),
         ) : null,
         h('div', { ref: listRef, onScroll: onListScroll, style: { flex: 1, overflowY: 'auto', padding: 12 } },
