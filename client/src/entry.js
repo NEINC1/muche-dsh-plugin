@@ -967,8 +967,8 @@ export const clientDefinition = {
             style: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', background: 'none', border: 'none', color: 'var(--dsw-alias-label-secondary)', padding: '2px 6px' },
           },
             icon.tasks(),
-            tasks.filter((task) => task.active).length
-              ? h('span', { style: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-state-business-primary)' } }, String(tasks.filter((task) => task.active).length))
+            (tasks.filter((task) => task.needs_action).length || tasks.filter((task) => task.active).length)
+              ? h('span', { style: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-state-business-primary)' } }, String(tasks.filter((task) => task.needs_action).length || tasks.filter((task) => task.active).length))
               : null,
           ),
           desktopChat ? null : h('button', {
@@ -1003,7 +1003,7 @@ export const clientDefinition = {
               onClick: () => setExpandedTask((current) => current === task.task_id ? '' : task.task_id),
               style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' },
             },
-              h('span', { style: { minWidth: 52, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, task.report_label || task.status_label || ''),
+              h('span', { style: { minWidth: 52, fontSize: 11, color: task.needs_action ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-label-secondary)' } }, task.stage_label || task.report_label || task.status_label || ''),
               h('span', { title: task.goal, style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, task.goal || task.task_id),
               task.active ? h('button', {
                 type: 'button',
@@ -1025,7 +1025,8 @@ export const clientDefinition = {
               }, '继续'),
             ),
             expandedTask === task.task_id ? h('div', { style: { padding: '4px 0 2px 60px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
-              h('div', { style: { marginBottom: 2 } }, task.goal || ''),
+              h('div', { style: { marginBottom: 2 } }, (task.stage_label || '') + (task.report_label ? ' · ' + task.report_label : '')),
+            h('div', { style: { marginBottom: 2 } }, task.goal || ''),
               (task.inputs || []).length
                 ? task.inputs.map((item) => h('div', { key: item.input_id, style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } },
                   (item.state_label || '') + '：' + (item.text || ''),
