@@ -19,7 +19,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve))
  * runtime snapshot the SSE route would publish, and pushes real runtime frames into the
  * EventSource the bundle opened. No source rewriting and no private state poking.
  */
-async function mountPanel({ desktopMode = false } = {}) {
+async function mountPanel({ desktopMode = false, tasks = [], stopResult = null, taskResponse = null } = {}) {
   const win = new Window({ url: 'http://127.0.0.1:19387/' })
   let desktopCloses = 0
   if (desktopMode) win.mucheDesktopChat = { active: true, close() { desktopCloses++ } }
@@ -37,6 +37,16 @@ async function mountPanel({ desktopMode = false } = {}) {
     httpCalls.push({ url: String(url), method: init.method || 'GET', body: init.body })
     if (String(url).includes('/runtime')) return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: runtime.getSnapshot() }) }
     if (String(url).includes('/chat/history')) return { ok: true, status: 200, json: async () => ({ ok: true, messages: [], has_more: false, context: runtime.context() }) }
+    if (String(url).includes('/tasks/stop')) {
+      const context = runtime.context()
+      const result = typeof stopResult === 'function' ? await stopResult() : stopResult
+      return { ok: true, status: 200, json: async () => ({ ...result, context }) }
+    }
+    if (String(url).includes('/tasks')) {
+      const context = runtime.context()
+      const values = taskResponse ? await taskResponse() : tasks
+      return { ok: true, status: 200, json: async () => ({ ok: true, tasks: values, context }) }
+    }
     if (String(url).includes('/desktop')) return { ok: true, status: 202, json: async () => ({ ok: true, accepted: true, snapshot: runtime.getSnapshot() }) }
     return { ok: true, status: 200, json: async () => ({ ok: false, code: 'HTTP_ERROR', error: 'unexpected' }) }
   }
@@ -114,7 +124,7 @@ async function mountPanel({ desktopMode = false } = {}) {
     })
   }
   // Host-published runtime frames arrive outside React, so they are wrapped in act() here.
-  const pushRuntime = () => act(() => { for (const source of sources) if (!source.closed) source.send({ type: 'runtime', snapshot: runtime.getSnapshot() }) })
+  const pushRuntime = () => act(() => { for (const source of [...sources]) if (!source.closed) source.send({ type: 'runtime', snapshot: runtime.getSnapshot() }) })
   const text = () => win.document.body.textContent || ''
   return {
     win, runtime, react, httpCalls, sources, open, pushRuntime, text, render, act, desktopCloses: () => desktopCloses,
@@ -128,6 +138,86 @@ async function mountPanel({ desktopMode = false } = {}) {
     },
   }
 }
+
+test('task panel shows recorded results and reports an unconfirmed stop', async () => {
+  const panel = await mountPanel({
+    tasks: [
+      { task_id: 'done', goal: '检查电脑游戏', stage_label: '已完成', active: false, can_stop: false,
+        assignments: [{ run_id: 'r1', status: 'succeeded', result_text: '游戏甲\n游戏乙' }] },
+      { task_id: 'running', goal: '调研 AI', stage_label: '执行中', active: true, can_stop: true },
+    ],
+    stopResult: { ok: false, result: { action: 'unsupported' } },
+  })
+  try {
+    await panel.open()
+    await panel.act(async () => {
+      panel.win.document.querySelector('[aria-label="任务列表"]').click()
+      await tick()
+    })
+    assert.equal(panel.text().includes('继续'), false)
+    const details = [...panel.win.document.querySelectorAll('button')].filter(node => node.textContent === '详情')
+    await panel.act(async () => details[0].click())
+    assert.match(panel.text(), /游戏甲\s*游戏乙/)
+    const stop = [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '停止')
+    await panel.act(async () => { stop.click(); await tick() })
+    assert.match(panel.text(), /宿主插件尚不支持确认停止/)
+    const calls = panel.httpCalls.filter(call => call.url.includes('/tasks/stop'))
+    assert.equal(calls.length, 1)
+    assert.equal(JSON.parse(calls[0].body).task_id, 'running')
+    assert.equal(panel.httpCalls.filter(call => call.url.includes('/api/muche/chat')).length, 0)
+  } finally { panel.restore() }
+})
+
+test('task panel fences old tasks and delayed stop receipts when the account changes', async () => {
+  const tasks = [{ task_id: 'old', goal: '旧账户任务', stage_label: '执行中', active: true, can_stop: true }]
+  let finishStop
+  const panel = await mountPanel({ tasks, stopResult: () => new Promise(resolve => { finishStop = resolve }) })
+  try {
+    await panel.open()
+    await panel.act(async () => { panel.win.document.querySelector('[aria-label="任务列表"]').click(); await tick() })
+    assert.match(panel.text(), /旧账户任务/)
+    await panel.act(async () => {
+      [...panel.win.document.querySelectorAll('button')].find(node => node.textContent === '停止').click()
+      await tick()
+    })
+    assert.match(panel.text(), /正在确认停止结果/)
+    tasks.splice(0, tasks.length, { task_id: 'new', goal: '新账户任务', stage_label: '执行中', active: true, can_stop: true })
+    panel.runtime.configure({ ...CFG, apiKey: 'another-panel-test-key' })
+    panel.pushRuntime()
+    await panel.act(async () => { await tick() })
+    assert.doesNotMatch(panel.text(), /旧账户任务|正在确认停止结果/)
+    assert.match(panel.text(), /新账户任务/)
+    await panel.act(async () => { finishStop({ ok: true, result: { action: 'stopped' } }); await tick() })
+    assert.doesNotMatch(panel.text(), /旧账户任务|任务已停止/)
+    assert.match(panel.text(), /新账户任务/)
+  } finally { panel.restore() }
+})
+
+test('a late task refresh cannot restore an older running status', async () => {
+  let holdNext = false
+  let finishOld
+  let tasks = [{ task_id: 'job', goal: '任务', stage_label: '执行中', active: true, can_stop: true }]
+  const panel = await mountPanel({ taskResponse: () => {
+    if (holdNext) { holdNext = false; return new Promise(resolve => { finishOld = resolve }) }
+    return tasks
+  } })
+  try {
+    await panel.open()
+    await panel.act(async () => { panel.win.document.querySelector('[aria-label="任务列表"]').click(); await tick() })
+    assert.match(panel.text(), /执行中/)
+    holdNext = true
+    await panel.act(async () => { panel.win.document.querySelector('[aria-label="任务列表"]').click(); await tick() })
+    tasks = [{ task_id: 'job', goal: '任务', stage_label: '已停止', active: false, can_stop: false }]
+    await panel.act(async () => { panel.win.document.querySelector('[aria-label="任务列表"]').click(); await tick() })
+    assert.match(panel.text(), /已停止/)
+    await panel.act(async () => {
+      finishOld([{ task_id: 'job', goal: '任务', stage_label: '执行中', active: true, can_stop: true }])
+      await tick()
+    })
+    assert.match(panel.text(), /已停止/)
+    assert.doesNotMatch(panel.text(), /执行中/)
+  } finally { panel.restore() }
+})
 
 // The official settings shell renders its launcher as the account menu; the 设置 item is the
 // only entry that opens settings. Settings has no public open service, so the menu must follow

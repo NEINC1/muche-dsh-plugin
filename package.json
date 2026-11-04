@@ -1,6 +1,6 @@
 {
   "name": "muche-dsh-plugin",
-  "version": "0.8.12",
+  "version": "0.8.13",
   "description": "连接小沐（MuChe 数字生命）的 dsh 插件：可以和有持续状态的小沐聊天，小沐可调用本机 dsh 执行任务；桌面端支持左下角菜单与桌面悬浮小沐",
   "type": "module",
   "main": "lib/index.js",
@@ -31,14 +31,14 @@
     "compatibility": {
       "dshReleases": {
         "0.2.1-rc.5": "compatible",
-        "0.2.2-alpha.2": "compatible"
+        "0.2.2-alpha.3": "compatible"
       }
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.4-0 <5.0.0",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.5 || 0.2.2-alpha.2",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.5 || 0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5 || 0.2.2-alpha.3",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5 || 0.2.2-alpha.3",
     "@deepseek-ai/schemastery": ">=3.18.4-0 <4.0.0"
   },
   "dependencies": {
@@ -61,7 +61,7 @@
   ],
   "engines": {
     "node": ">=22",
-    "dsh": "0.2.1-rc.5 || 0.2.2-alpha.2"
+    "dsh": "0.2.1-rc.5 || 0.2.2-alpha.3"
   },
   "license": "(MIT AND CC-BY-NC-SA-4.0)",
   "repository": {
@@ -69,9 +69,9 @@
     "url": "git+https://github.com/NEINC1/muche-dsh-plugin.git"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-llm": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-tool-ask-user": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-tools": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-tool-ask-user": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-tools": "0.2.2-alpha.3",
     "esbuild": "^0.28.2",
     "happy-dom": "21.0.4",
     "react": "^18.2.0",

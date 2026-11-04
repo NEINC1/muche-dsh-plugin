@@ -6,13 +6,13 @@ import { promisify } from 'node:util'
 import semver from 'semver'
 
 const exec = promisify(execFile)
-const targets = ['0.2.1-rc.5', '0.2.2-alpha.2']
-const rejected = ['0.2.0-rc.2', '0.2.1-rc.4', '0.2.1', '0.2.2-alpha.1', '0.2.2-alpha.3', '0.2.2']
+const targets = ['0.2.1-rc.5', '0.2.2-alpha.3']
+const rejected = ['0.2.0-rc.2', '0.2.1-rc.4', '0.2.1', '0.2.2-alpha.1', '0.2.2-alpha.2', '0.2.2']
 const checks = {
   'dsh-llm': ['createUserMessage'],
   'dsh-tools': ['validateJsonSchemaValue'],
-  'dsh-api-session-controller': ['sessionController'],
-  'dsh-agent': ['agent/inbox/claimed', 'steer'],
+  'dsh-api-session-controller': ['sessionController', 'cancel(request: SessionCancelRequest)'],
+  'dsh-agent': ['agent/inbox/claimed', 'steer', 'nextStep', 'nextTurn', 'remove(messageId: MessageId)'],
   'dsh-settings': ['SettingsForms', 'update(ns'],
   'dsh-host-webserver': ['webServer'],
   'dsh-client-connection': ['requestRejection'],
@@ -53,6 +53,15 @@ if (Object.keys(releases).sort().join() !== [...targets].sort().join() || target
 const root = await mkdtemp(join(tmpdir(), 'muche-cohort-'))
 let networkFailure = false
 try {
+  try {
+    const response = await fetch('https://registry.npmjs.org/@deepseek-ai%2Fdsh', { signal: AbortSignal.timeout(30000) })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const tags = (await response.json())['dist-tags'] || {}
+    if ([tags.latest, tags.alpha].sort().join() !== [...targets].sort().join()) {
+      console.error(`FAIL DSH dist-tags: latest=${tags.latest || 'missing'} alpha=${tags.alpha || 'missing'}`)
+      failures++
+    }
+  } catch (error) { console.error(`NETWORK DSH dist-tags: ${error.message}`); networkFailure = true }
   for (const version of targets) {
     for (const [name, required] of Object.entries(checks)) {
       let response
@@ -68,6 +77,10 @@ try {
         await exec('tar', ['-xzf', archive, '-C', dir])
         const content = await collect(join(dir, 'package'))
         for (const symbol of required) if (!content.includes(symbol)) { console.error(`FAIL ${version} ${name}: ${symbol}`); failures++ }
+        if (name === 'dsh-api-session-controller') {
+          const query = version === '0.2.1-rc.5' ? 'inspect(sessionId: SessionId' : 'state(request: SessionStateRequest'
+          if (!content.includes(query)) { console.error(`FAIL ${version} ${name}: ${query}`); failures++ }
+        }
       } catch (error) { console.error(`FAIL ${version} ${name}: ${error.message}`); failures++ }
     }
     console.log(`Checked ${version}`)

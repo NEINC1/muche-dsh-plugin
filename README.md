@@ -20,7 +20,9 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级使用同一条命令。插件 0.8.8 的目标宿主是 DSH `0.2.1-rc.5` 和 `0.2.2-alpha.2`；`engines.dsh` 只接受这两个版本。0.7.0 起使用桥接协议 v2；0.8.5 起协商可选能力（例如显式取消 `assignment-cancel`），0.8.6 起协商任务输入投递 `input-receipts`，0.8.7 起聊天面板带任务抽屉（列表/状态/停止），0.8.8 起任务抽屉显示报告语义（完成/阻塞/失败/可继续），旧宿主按能力降级。
+升级使用同一条命令。当前市场版本为 0.8.12；工作区已准备 0.8.13，须发布后才会进入用户设备。
+工作区目标宿主是 DSH `0.2.1-rc.5`（latest）和 `0.2.2-alpha.3`（alpha）；`engines.dsh` 只接受这两个版本。市场中的 0.8.12 仍声明 `0.2.1-rc.5` 和 `0.2.2-alpha.2`。
+桥接协议 v2 协商取消、输入送达及已读等能力，旧宿主按实际能力降级。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -32,6 +34,7 @@ dsh plugin add muche-dsh-plugin
 2. 点击左下角「小沐」打开菜单，选择「显示小沐」；点击桌面立绘打开聊天，拖动立绘可调整位置。菜单中的「设置」打开 DSH 设置。非 Desktop 环境可通过菜单中的「打开聊天面板」进入聊天。
 3. 第一次显示时会下载 Electron 桌面组件。显示偏好与窗口位置保存在 `DSH_HOME/muche-desktop/state.json`（默认 `~/.dsh/muche-desktop/`），手动删除该目录可清除桌面组件缓存和位置偏好。聊天记录仍保存在后端。
 4. 输入框支持 `Ctrl+V` 粘贴剪贴板图片；反向桥接配好 key 后按连接状态启动。
+5. 本工作区的聊天面板顶部「任务」图标打开任务抽屉：显示任务状态与 stage（等你回答/被阻塞会高亮）、追加输入、最近执行和完整已存结果；进行中任务可停止，后续需求在聊天中提出并由任务路由决定是否续接。
 
 桌面立绘取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，素材限非商业使用；形象按 CC BY-NC-SA 4.0 授权，出处与署名见 [素材说明](desktop-helper/assets/README.md)。
 
@@ -90,6 +93,8 @@ dsh plugin remove 'muche-dsh-plugin'
 反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力，后端以 `dsh_hello_ack` 确认登记成功与否（成功带 `host_id` 回显，失败带已有枚举 `code` 且不登记）；插件只认该 ACK 为登记事实，不以 socket hello 或本地 ready 代替，未收到 ACK 前保持 starting。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。会话不存在保留具体上游事实，由小沐说明并按剩余任务续接新会话；失效的 `sN` 不再复用。断连与未知结果保留受理确定性，不据此重做副作用任务；重启恢复先只读查询原 task。
 
 在途追加只在相同 live run 的自有 turn 使用公开 `Agent.steer`，用同 cohort 的 `createUserMessage` 构造消息并同步受理；原任务尚未进入自有 turn 时返回 `turn_pending`，后端保留同一 `append_id` 重试。终态后拒收，不转成无人收结果的新轮。明确拒收的追加保留完整任务，等原任务结果落账后由小沐续办；曾丢失回执的追加仍保留结果未知事实。授权/提问先登记 resolver 再经 `dsh_interactive` 上行，每次交互有独立 opaque id，原始问题与选项完整保留。其他 turn 透传。小沐能拿捏就提交决定，需要用户时提交真实问题并保留等待；`dsh_decide_result` 只确认本地校验提交；后续原生 `tool/result` 或迟到答案接收事件以 `dsh_interactive_result` 确认原生接收，执行最终结果另报。宿主进程缓存相同 `command_id` 的回执：活跃 run 的收据保留，终态收据按最近 200 项收敛；相同身份不同内容拒收。
+
+停止通过所属会话的 `sessionController.cancel` 请求原生取消，并等待自有 turn 的中止终态；请求停止后拒绝新增追加，只按消息身份移除该执行尚未消费的追加，保留其他来源的收件箱内容。取消或待处理输入状态无法确认时不返回已停止。
 
 用户等待暂停活跃执行计时。卸载、断连、取消、上限与错误均清理订阅/等待，保留终态和部分输出；技术失效不表示用户拒绝。宿主 `bridgeId` 经官方 settings 保存且同宿主双挂载共享，排障勿删除或复制该身份。
 

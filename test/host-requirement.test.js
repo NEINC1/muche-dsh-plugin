@@ -8,10 +8,10 @@ const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 test('engines.dsh 仅允许两个目标宿主版本', () => {
   const range = PKG.engines?.dsh
   assert.ok(range)
-  for (const version of ['0.2.1-rc.5', '0.2.2-alpha.2']) {
+  for (const version of ['0.2.1-rc.5', '0.2.2-alpha.3']) {
     assert.equal(semver.satisfies(version, range, { includePrerelease: true }), true, version)
   }
-  for (const version of ['0.2.0-rc.2', '0.2.1-rc.4', '0.2.1', '0.2.2-alpha.1', '0.2.2-alpha.3', '0.2.2', '0.3.0']) {
+  for (const version of ['0.2.0-rc.2', '0.2.1-rc.4', '0.2.1', '0.2.2-alpha.1', '0.2.2-alpha.2', '0.2.2', '0.3.0']) {
     assert.equal(semver.satisfies(version, range, { includePrerelease: true }), false, version)
   }
 })

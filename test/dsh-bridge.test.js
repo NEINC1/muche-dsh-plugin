@@ -83,6 +83,23 @@ async function fixture({ timed = false } = {}) {
   return { frames, connections, send, find, findIn, switchConfig, wait, start, finish, emit, waterfall, prompts, controller, bridge, runtime, listeners, submitted, close: async () => { for (const fn of disposers) fn(); runtime.dispose(); for (const connection of connections) connection.socket.close(); await new Promise((r) => wss.close(r)); rmSync(directory, { recursive: true, force: true }) } }
 }
 
+test('a stop frame crosses the real WS bridge and waits for the native turn to abort', async () => {
+  const f = await fixture()
+  try {
+    const cancelled = []
+    f.controller.cancel = (request) => { cancelled.push(request); return { accepted: true } }
+    await f.start({ task_id: 'run-stop', run_id: 'run-stop' })
+    f.send({ type: 'dsh_stop', command_id: 'stop-ws', task_id: 'run-stop', run_id: 'run-stop' })
+    await f.wait(() => cancelled.length === 1)
+    assert.deepEqual(cancelled, [{ sessionId: 'session' }])
+    assert.equal(f.frames.some((frame) => frame.type === 'dsh_stop_result'), false)
+    f.emit('turn/end', { turn: 1, reason: { kind: 'aborted' } })
+    const result = await f.find('dsh_stop_result', (frame) => frame.command_id === 'stop-ws')
+    assert.equal(result.status, 'stopped')
+    assert.equal(result.ok, true)
+  } finally { await f.close() }
+})
+
 test('timed question remains answerable and the owned result waits for the admitted reply turn', async () => {
   const f = await fixture({ timed: true })
   try {

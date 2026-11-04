@@ -949,13 +949,28 @@
         const [olderCursor, setOlderCursor] = React.useState(null);
         const [loadingOlder, setLoadingOlder] = React.useState(false);
         const [input, setInput] = React.useState("");
-        const [tasks, setTasks] = React.useState([]);
+        const [taskSnapshot, setTaskSnapshot] = React.useState({ contextKey: "", tasks: [] });
+        const tasks = contextKey && taskSnapshot.contextKey === contextKey ? taskSnapshot.tasks : [];
         const [tasksOpen, setTasksOpen] = React.useState(false);
         const [expandedTask, setExpandedTask] = React.useState("");
+        const [stoppingTasks, setStoppingTasks] = React.useState({});
+        const [taskNotices, setTaskNotices] = React.useState({});
+        const stoppingRef = React.useRef(/* @__PURE__ */ new Set());
+        const taskRequestSeq = React.useRef(0);
         const loadTasks = React.useCallback(async () => {
+          if (!runtime.context || !runtimeStore.accepts(runtime.context)) return;
+          const sequence = ++taskRequestSeq.current;
           const res = await runtimeRequest("/api/muche/tasks");
-          if (res?.ok) setTasks(Array.isArray(res.tasks) ? res.tasks : []);
-        }, []);
+          if (res?.ok && sequence === taskRequestSeq.current) setTaskSnapshot({ contextKey, tasks: Array.isArray(res.tasks) ? res.tasks : [] });
+        }, [contextKey]);
+        React.useEffect(() => {
+          taskRequestSeq.current += 1;
+          setTaskSnapshot({ contextKey: "", tasks: [] });
+          setTaskNotices({});
+          setExpandedTask("");
+          setStoppingTasks({});
+          stoppingRef.current.clear();
+        }, [contextKey]);
         React.useEffect(() => {
           if (!open) return void 0;
           void loadTasks();
@@ -1777,25 +1792,52 @@
                 },
                 h("span", { style: { minWidth: 52, fontSize: 11, color: task.needs_action ? "var(--dsw-alias-state-business-primary)" : "var(--dsw-alias-label-secondary)" } }, task.stage_label || task.report_label || task.status_label || ""),
                 h("span", { title: task.goal, style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, task.goal || task.task_id),
-                task.active ? h("button", {
+                task.can_stop ? h("button", {
                   type: "button",
+                  disabled: !!stoppingTasks[contextKey + ":" + task.task_id],
                   onClick: async (event) => {
                     event.stopPropagation();
-                    await runtimeRequest("/api/muche/tasks/stop", { task_id: task.task_id });
-                    void loadTasks();
+                    if (!runtime.context || !runtimeStore.accepts(runtime.context)) return;
+                    const stopKey = contextKey + ":" + task.task_id;
+                    if (stoppingRef.current.has(stopKey)) return;
+                    stoppingRef.current.add(stopKey);
+                    setStoppingTasks((current) => ({ ...current, [stopKey]: true }));
+                    setTaskNotices((current) => ({ ...current, [stopKey]: "正在确认停止结果…" }));
+                    try {
+                      const response = await runtimeRequest("/api/muche/tasks/stop", { task_id: task.task_id });
+                      if (runtimeStore.accepts(runtime.context)) {
+                        const messages = {
+                          stopped: "任务已停止",
+                          already_ended: "任务已经结束",
+                          unsupported: "宿主插件尚不支持确认停止",
+                          offline: "宿主不在线，无法确认停止",
+                          unconfirmed: "停止结果尚未确认，请稍后查看",
+                          missing: "未找到该任务"
+                        };
+                        setTaskNotices((current) => ({ ...current, [stopKey]: messages[response?.result?.action] || response?.error || "停止结果尚未确认，请稍后查看" }));
+                        await loadTasks();
+                      }
+                    } finally {
+                      stoppingRef.current.delete(stopKey);
+                      setStoppingTasks((current) => {
+                        const next = { ...current };
+                        delete next[stopKey];
+                        return next;
+                      });
+                    }
                   },
                   style: { cursor: "pointer", background: "none", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6, padding: "1px 8px", fontSize: 11, color: "var(--dsw-alias-state-error-primary)" }
-                }, "停止") : null,
+                }, stoppingTasks[contextKey + ":" + task.task_id] ? "停止中" : "停止") : null,
                 h("button", {
                   type: "button",
-                  onClick: async (event) => {
+                  onClick: (event) => {
                     event.stopPropagation();
-                    await runtimeRequest("/api/muche/chat", { text: "继续这个任务：" + (task.goal || task.task_id) });
-                    void loadTasks();
+                    setExpandedTask((current) => current === task.task_id ? "" : task.task_id);
                   },
                   style: { cursor: "pointer", background: "none", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6, padding: "1px 8px", fontSize: 11, color: "var(--dsw-alias-state-business-primary)" }
-                }, "继续")
+                }, "详情")
               ),
+              taskNotices[contextKey + ":" + task.task_id] ? h("div", { role: "status", style: { paddingLeft: 60, fontSize: 12, color: "var(--dsw-alias-label-secondary)" } }, taskNotices[contextKey + ":" + task.task_id]) : null,
               expandedTask === task.task_id ? h(
                 "div",
                 { style: { padding: "4px 0 2px 60px", fontSize: 12, color: "var(--dsw-alias-label-secondary)" } },
@@ -1813,7 +1855,8 @@
                   task.assignments.map((run) => h(
                     "div",
                     { key: run.run_id, style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)" } },
-                    (run.status || "") + " · " + (run.summary || run.run_id)
+                    h("div", null, (run.status || "") + " · " + (run.run_id || "")),
+                    run.result_text ? h("div", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, run.result_text) : null
                   ))
                 ) : null
               ) : null

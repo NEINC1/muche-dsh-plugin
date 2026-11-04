@@ -23,8 +23,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Require npm trusted publishing support
+        run: |
+          NPM_VERSION="$(npm --version)"
+          echo "npm $NPM_VERSION"
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); if (![major, minor, patch].every(Number.isInteger) || major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1)' "$NPM_VERSION"
       - name: Verify tag matches package version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
