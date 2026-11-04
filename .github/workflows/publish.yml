@@ -5,7 +5,8 @@ name: publish
 #   Publisher: GitHub Actions
 #   Repository: NEINC1/muche-dsh-plugin
 #   Workflow filename: publish.yml
-# Then every pushed tag like v0.8.10 publishes with provenance (no long-lived token).
+# Then every pushed tag like v0.8.13 publishes with provenance (no long-lived token).
+# Republishing an already-published version is a successful no-op.
 
 on:
   push:
@@ -32,5 +33,15 @@ jobs:
             echo "tag $TAG does not match package version $VERSION"
             exit 1
           fi
+      - name: Check whether this version is already published
+        id: exists
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "muche-dsh-plugin@$VERSION" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish
+        if: steps.exists.outputs.published != 'true'
         run: npm publish --provenance --access public
