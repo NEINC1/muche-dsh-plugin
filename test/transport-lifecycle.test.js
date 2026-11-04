@@ -170,8 +170,8 @@ test('dispose为终态，start不可复活，迟到事件不排重连', () => {
   assert.equal(clock.jobs.size, 0)
 })
 
-test('1008/4003等明确非重试失败pause，不猜过期或Origin；显式start才恢复', () => {
-  const cases = [[1008, FORBIDDEN], [4003, AUTH_FAILED], [4403, FORBIDDEN], [1007, INPUT_INVALID], [1009, INPUT_INVALID], [1002, INVALID_RESPONSE]]
+test('1008等明确非重试失败pause，不猜过期或Origin；显式start才恢复', () => {
+  const cases = [[1008, FORBIDDEN], [4403, FORBIDDEN], [1007, INPUT_INVALID], [1009, INPUT_INVALID], [1002, INVALID_RESPONSE]]
   for (const [closeCode, code] of cases) {
     const { transport, sockets, clock } = fixture()
     transport.start(); greet(sockets[0])
@@ -184,7 +184,6 @@ test('1008/4003等明确非重试失败pause，不猜过期或Origin；显式sta
     assert.equal(state.code, code)
     assert.equal(state.retryable, false)
     assert.ok(!state.lastError.includes('过期'))
-    if (code === AUTH_FAILED) assert.equal(state.lastError, '请检查配置')
     clock.advance(600000)
     assert.equal(sockets.length, 1)
     assert.equal(clock.jobs.size, 0)
@@ -192,6 +191,25 @@ test('1008/4003等明确非重试失败pause，不猜过期或Origin；显式sta
     assert.equal(sockets.length, 2)
     assert.equal(transport.getState().status, 'connecting')
     transport.dispose()
+  }
+})
+
+test('服务端关连接(4003/4401/1011)按可重试传输重置处理，重连握手才是认证真源', () => {
+  for (const [closeCode, expectedCode] of [[4003, NETWORK], [4401, NETWORK], [1011, HTTP_ERROR]]) {
+    const { transport, sockets, clock } = fixture()
+    transport.start(); greet(sockets[0])
+    sockets[0].remoteClose(closeCode, 'credential reset')
+    const state = transport.getState()
+    assert.equal(state.ready, false)
+    assert.equal(state.code, expectedCode)
+    assert.equal(state.retryable, true)
+    assert.equal(state.closeCode, closeCode)
+    clock.advance(clock.nextDelay())
+    assert.equal(sockets.length, 2)
+    greet(sockets[1])
+    assert.equal(transport.getState().ready, true)
+    transport.dispose()
+    assert.equal(clock.jobs.size, 0)
   }
 })
 
@@ -251,8 +269,8 @@ test('退避加入可测jitter且最大30s，旧重连回调不能再建连接',
   }
 })
 
-test('HTTP升级403/401明确停，503仅业务暂不可用可退避，绝不伪造Origin绕过拒绝', () => {
-  for (const [status, code, retryable] of [[403, FORBIDDEN, false], [401, AUTH_FAILED, false], [503, HTTP_ERROR, true], [404, HTTP_ERROR, false]]) {
+test('握手401/403是认证结论(配置错误)，503仅暂不可用可退避，绝不伪造Origin绕过拒绝', () => {
+  for (const [status, code, retryable] of [[403, AUTH_FAILED, false], [401, AUTH_FAILED, false], [503, HTTP_ERROR, true], [404, HTTP_ERROR, false]]) {
     const { transport, sockets, clock } = fixture()
     transport.start()
     let destroyed = 0

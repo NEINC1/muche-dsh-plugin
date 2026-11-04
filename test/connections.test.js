@@ -46,6 +46,20 @@ test('同纹复用包括paused transport，不偷偷start重试', () => {
   assert.equal(created.length, 1)
 })
 
+test('显式rearm(force)同指纹也重建transport，被动sync仍复用paused连接', () => {
+  const created = []
+  const channel = new ChannelConnection({ createTransport: fakeFactory(created) })
+  const paused = channel.sync({ backendUrl: 'https://h', apiKey: 'k' })
+  paused.state = { ...idle, status: 'closed', code: 'AUTH_FAILED', retryable: false }
+  assert.equal(channel.sync({ backendUrl: 'https://h', apiKey: 'k' }), paused)
+  const rebuilt = channel.sync({ backendUrl: 'https://h', apiKey: 'k', force: true })
+  assert.notEqual(rebuilt, paused)
+  assert.equal(paused.disposed, true)
+  assert.equal(created.length, 2)
+  assert.equal(channel.getState().status, 'connecting')
+  channel.dispose()
+})
+
 test('变纹换连，迟到的旧status/hello/业务回调不能影响新连接', () => {
   const created = []
   const channel = new ChannelConnection({ channel: 'dsh-bridge', createTransport: fakeFactory(created) })

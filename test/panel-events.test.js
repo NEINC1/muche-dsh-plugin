@@ -152,6 +152,24 @@ test('格式等价配置复用同连接且状态 callbacks 保持有效', (t) =>
   assert.equal(f.runtime.getSnapshot().chat.receive.code, 'NETWORK')
 })
 
+test('显式保存rearm在同配置下重建上游连接，不被同指纹短路', (t) => {
+  const f = harness(t)
+  f.hub.subscribe(fakeRes())
+  const first = f.created[0]
+  assert.equal(first.opts.channel, '')
+  first.status({ status: 'open', ready: true })
+  first.status({ status: 'closed', ready: false, code: 'AUTH_FAILED', retryable: false })
+  assert.equal(f.hub.hasUpstream, true)
+  assert.equal(f.hub.rearm(f.runtime.context()), true)
+  assert.equal(first.disposed, true)
+  assert.equal(f.created.length, 2)
+  assert.equal(f.hub.hasUpstream, true)
+  assert.equal(f.hub.rearm(f.runtime.context()), true)
+  assert.equal(f.created.length, 3)
+  f.hub.configure({ ...CFG }, f.runtime.context(), { rearm: true })
+  assert.equal(f.created.length, 4)
+})
+
 test('先登记并写完整快照，同步 start 状态/业务帧不丢；上游保持面板池', (t) => {
   const f = harness(t, { startStates: [{ status: 'connecting', ready: false }, { status: 'open', ready: true }], startFrame: { type: 'reply', message_id: 'sync', text: 'reply' } })
   const res = fakeRes()
