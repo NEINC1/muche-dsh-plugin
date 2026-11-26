@@ -170,6 +170,22 @@
     const x = Date.parse(a), y = Date.parse(b);
     return Number.isFinite(x) && Number.isFinite(y) ? (y - x) / 6e4 : null;
   }
+  function chatReplyFailure(reply) {
+    if (reply.superseded || reply.duplicate || reply.messages?.length) return null;
+    const status = reply.outcome_status;
+    if (status === "failed") return reply.failure_notice_recorded ? null : "这轮回复没有完成";
+    if (reply.waiting_for_decision || status === "retry_wait" || status === "natural_silence" || status === "action_only") return null;
+    return reply.degraded ? "这轮回复暂时不可用" : null;
+  }
+  function compareChatRows(a, b) {
+    const as = Number.isInteger(a?.seq) ? a.seq : null;
+    const bs = Number.isInteger(b?.seq) ? b.seq : null;
+    if (as !== null && bs !== null && as !== bs) return as - bs;
+    const ta = Date.parse(a?.ts || "");
+    const tb = Date.parse(b?.ts || "");
+    if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0;
+    return ta - tb;
+  }
   function clipboardImageFiles(clipboard) {
     if (!clipboard) return [];
     const fromItems = Array.from(clipboard.items || []).filter((item) => item.kind === "file" && String(item.type || "").startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
@@ -584,6 +600,115 @@
     };
   }
 
+  // client/message-receipts.js
+  function createMessageReceiptQueue({
+    scope,
+    owner,
+    storage,
+    isCurrent,
+    send,
+    onError = console.warn,
+    setTimer = setTimeout,
+    clearTimer = clearTimeout
+  }) {
+    if (!scope || !owner) throw new Error("message receipt scope and owner are required");
+    const prefix = `muche-receipt-v1:${encodeURIComponent(scope)}:`;
+    const memory = /* @__PURE__ */ new Set();
+    let timer = null, running = false, disposed = false, failures = 0;
+    function pending() {
+      const ids = new Set(memory);
+      try {
+        const store = storage();
+        if (!store) throw new Error("persistent storage unavailable");
+        for (let i = 0; i < store.length; i++) {
+          const key = store.key(i);
+          if (key?.startsWith(prefix)) ids.add(key.slice(prefix.length));
+        }
+      } catch (error) {
+        onError("message receipt storage unavailable", error);
+      }
+      return [...ids].filter(Boolean).sort().slice(0, 200);
+    }
+    function schedule(delay) {
+      if (disposed || timer !== null) return;
+      timer = setTimer(() => {
+        timer = null;
+        void flush();
+      }, delay);
+    }
+    function retry() {
+      const delay = Math.min(3e4, 3e3 * 2 ** Math.min(failures++, 4));
+      schedule(delay);
+    }
+    async function flush() {
+      if (disposed || running || !isCurrent()) return;
+      const ids = pending();
+      if (!ids.length) return;
+      running = true;
+      let succeeded = false;
+      try {
+        const result = await send(ids, owner);
+        if (disposed || !isCurrent()) return;
+        const accepted = result?.accepted_message_ids;
+        const unavailable = result?.unavailable_message_ids;
+        const checked = Array.isArray(accepted) && Array.isArray(unavailable) ? [...accepted, ...unavailable] : [];
+        if (result?.receipt_owner !== owner || checked.length !== ids.length || new Set(checked).size !== ids.length || checked.some((id) => !ids.includes(id))) {
+          throw new Error("message receipt response is incomplete or from another account");
+        }
+        if (unavailable.length) onError("message receipt source unavailable", unavailable.length);
+        let store;
+        try {
+          store = storage();
+        } catch {
+          store = null;
+        }
+        for (const id of checked) {
+          if (store) store.removeItem(prefix + id);
+          memory.delete(id);
+        }
+        failures = 0;
+        succeeded = true;
+      } catch (error) {
+        onError("message receipt deferred", error);
+        retry();
+      } finally {
+        running = false;
+      }
+      if (succeeded && pending().length) schedule(0);
+    }
+    return {
+      enqueue(ids) {
+        if (disposed || !isCurrent()) return;
+        for (const id of new Set(ids)) {
+          if (typeof id !== "string" || !id) continue;
+          memory.add(id);
+          try {
+            const store = storage();
+            if (!store) throw new Error("persistent storage unavailable");
+            store.setItem(prefix + id, "1");
+          } catch (error) {
+            onError("message receipt storage unavailable", error);
+          }
+        }
+        schedule(0);
+      },
+      retryNow() {
+        if (disposed) return;
+        if (timer !== null) {
+          clearTimer(timer);
+          timer = null;
+        }
+        schedule(0);
+      },
+      flush,
+      dispose() {
+        disposed = true;
+        if (timer !== null) clearTimer(timer);
+        timer = null;
+      }
+    };
+  }
+
   // client/src/entry.js
   var VISION_PREFLIGHT_MAX_IMAGES = 3;
   var VISION_PREFLIGHT_MAX_BYTES = 8 * 1024 * 1024;
@@ -944,6 +1069,11 @@
         const runtime = useRuntime();
         const problem = runtime.problem;
         const contextKey = runtime.context ? runtime.context.runtimeId + ":" + runtime.context.generation : "";
+        const receiptQueueRef = React.useRef(null);
+        React.useEffect(() => () => {
+          receiptQueueRef.current?.queue.dispose();
+          receiptQueueRef.current = null;
+        }, [contextKey]);
         const [msgs, setMsgs] = React.useState([]);
         const [hasMore, setHasMore] = React.useState(false);
         const [olderCursor, setOlderCursor] = React.useState(null);
@@ -952,6 +1082,11 @@
         const [taskSnapshot, setTaskSnapshot] = React.useState({ contextKey: "", tasks: [] });
         const tasks = contextKey && taskSnapshot.contextKey === contextKey ? taskSnapshot.tasks : [];
         const [tasksOpen, setTasksOpen] = React.useState(false);
+        const [taskGoal, setTaskGoal] = React.useState("");
+        const [taskSubmitting, setTaskSubmitting] = React.useState(false);
+        const [taskSubmitNotice, setTaskSubmitNotice] = React.useState("");
+        const taskDraft = React.useRef(null);
+        const taskSubmission = React.useRef(null);
         const [expandedTask, setExpandedTask] = React.useState("");
         const [stoppingTasks, setStoppingTasks] = React.useState({});
         const [taskNotices, setTaskNotices] = React.useState({});
@@ -963,12 +1098,49 @@
           const res = await runtimeRequest("/api/muche/tasks");
           if (res?.ok && sequence === taskRequestSeq.current) setTaskSnapshot({ contextKey, tasks: Array.isArray(res.tasks) ? res.tasks : [] });
         }, [contextKey]);
+        async function submitComputerTask(event) {
+          event.preventDefault();
+          const context = runtime.context;
+          const goal = taskGoal.trim();
+          if (!goal || taskSubmission.current || !context || !runtimeStore.accepts(context)) return;
+          if (taskDraft.current?.goal !== goal) {
+            const bytes = crypto.getRandomValues(new Uint8Array(16));
+            const requestId = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+            taskDraft.current = { goal, request_id: requestId };
+          }
+          const draft = taskDraft.current;
+          taskSubmission.current = draft;
+          setTaskSubmitting(true);
+          setTaskSubmitNotice("");
+          try {
+            const response = await runtimeRequest("/api/muche/tasks", draft);
+            if (!runtimeStore.accepts(context)) return;
+            if (response?.ok && response.outcome === "accepted") {
+              taskDraft.current = null;
+              setTaskGoal("");
+              setTaskSubmitNotice("电脑任务已受理");
+              await loadTasks();
+            } else {
+              setTaskSubmitNotice(response?.error || "暂未确认受理，重试可继续核对这次提交");
+            }
+          } finally {
+            if (taskSubmission.current === draft) {
+              taskSubmission.current = null;
+              setTaskSubmitting(false);
+            }
+          }
+        }
         React.useEffect(() => {
           taskRequestSeq.current += 1;
           setTaskSnapshot({ contextKey: "", tasks: [] });
           setTaskNotices({});
           setExpandedTask("");
           setStoppingTasks({});
+          setTaskGoal("");
+          setTaskSubmitNotice("");
+          setTaskSubmitting(false);
+          taskDraft.current = null;
+          taskSubmission.current = null;
           stoppingRef.current.clear();
         }, [contextKey]);
         React.useEffect(() => {
@@ -1010,7 +1182,6 @@
           quotaUntilRef.current = ms;
           setQuotaUntil(ms);
         };
-        const failureNotice = () => ({ kind: "operation", text: "这条消息暂时没处理完，请稍后重试" });
         const withSticky = (rows2) => {
           const remaining = new Map(noticesRef.current);
           const result = [];
@@ -1063,9 +1234,10 @@
         const syncSeqRef = React.useRef(0);
         const overlayCovered = (o, base) => {
           if (!o || typeof o !== "object" || o.role === "system") return false;
-          if (o.mid && base.some((b) => b.delivery_id && b.delivery_id === o.mid)) return true;
+          const indexed = o.role === "assistant" && o.mid && Number.isInteger(o.delivery_index);
+          if (o.mid && base.some((b) => b.delivery_id === o.mid && (!indexed || b.role === o.role && b.delivery_index === o.delivery_index))) return true;
           const content = typeof o.content === "string" ? o.content : "";
-          if (content && base.some((b) => b.role === o.role && b.content === content)) return true;
+          if (!indexed && content && base.some((b) => b.role === o.role && b.content === content)) return true;
           if (!content) {
             const ot = Date.parse(o.ts);
             if (Number.isFinite(ot) && base.some((b) => {
@@ -1085,12 +1257,7 @@
             if (overlayCovered(o, base)) continue;
             rows2.push(o);
           }
-          rows2.sort((a, b) => {
-            const ta = Date.parse(a.ts);
-            const tb = Date.parse(b.ts);
-            if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0;
-            return ta - tb;
-          });
+          rows2.sort(compareChatRows);
           return withSticky(rows2);
         };
         const overlayAdd = (rows2) => {
@@ -1123,6 +1290,21 @@
           } catch {
           }
         };
+        const showReply = (reply, nowIso, mid, audio = "") => {
+          if (reply.superseded || reply.duplicate) return;
+          if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current));
+          const failure = chatReplyFailure(reply);
+          if (failure) reportFailure({ kind: "operation", text: failure }, { operation: "message", ts: nowIso, mid });
+          const parts = (reply.messages || []).map((t) => ({
+            role: "assistant",
+            content: String(t),
+            inner_thought: reply.inner_thought || "",
+            ts: nowIso,
+            voice: Boolean(audio),
+            voiceKey: audio ? mid : ""
+          }));
+          if (parts.length > 0) overlayAdd(parts);
+        };
         const handleHttpReply = (res, nowIso, mid) => {
           if (res?.stale) return;
           settleInflight(mid);
@@ -1130,16 +1312,12 @@
             reportFailure(res, { operation: "message", ts: nowIso, mid });
             return;
           }
-          if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current));
           if (res.transcript) updateOverlay(mid, { content: res.transcript });
           if (res.audio) {
             voiceClipsRef.current.set(mid, res.audio);
             playVoice(res.audio);
           }
-          const parts = (res.messages || []).map((t) => ({ role: "assistant", content: String(t), inner_thought: res.inner_thought || "", ts: nowIso, voice: Boolean(res.audio), voiceKey: res.audio ? mid : "" }));
-          if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
-            reportFailure(failureNotice(), { operation: "message", ts: nowIso, mid });
-          } else if (parts.length > 0) overlayAdd(parts);
+          showReply(res, nowIso, mid, res.audio);
         };
         const normalize = (rows2) => (rows2 || []).map((m) => ({
           role: m.role === "system" ? "system" : m.role === "user" ? "user" : "assistant",
@@ -1149,9 +1327,36 @@
           id: m.id || "",
           medium: m.medium || "text",
           image_count: Number(m.image_count) || 0,
-          delivery_id: typeof m.delivery_id === "string" ? m.delivery_id : typeof m.ingress_id === "string" ? m.ingress_id : "",
+          delivery_id: typeof m.delivery_id === "string" && m.delivery_id ? m.delivery_id : typeof m.ingress_id === "string" ? m.ingress_id : "",
+          delivery_index: Number.isInteger(m.delivery_index) ? m.delivery_index : null,
+          seq: Number.isInteger(m.message_seq) ? m.message_seq : null,
           vision: typeof m.vision_descriptions === "string" ? m.vision_descriptions : ""
         }));
+        const acknowledgeRows = (rows2, response) => {
+          const owner = response?.receipt_owner, scope = response?.receipt_scope;
+          const context = runtimeStore.context();
+          if (!owner || !scope || !context || !runtimeStore.accepts(context)) return;
+          let active = receiptQueueRef.current;
+          if (!active || active.owner !== owner || active.scope !== scope || !runtimeStore.accepts(active.context)) {
+            active?.queue.dispose();
+            const queue = createMessageReceiptQueue({
+              owner,
+              scope,
+              storage: () => window.localStorage,
+              isCurrent: () => runtimeStore.accepts(context),
+              send: async (ids2, expectedUser) => {
+                const result = await runtimeRequest("/api/muche/receipts", { message_ids: ids2, expected_user_id: expectedUser });
+                if (!result?.ok) throw new Error(result?.code || "receipt request failed");
+                return result;
+              }
+            });
+            active = { owner, scope, context, queue };
+            receiptQueueRef.current = active;
+          }
+          const ids = [...new Set(rows2.filter((row) => row.role === "assistant" && row.id && row.delivery_id).map((row) => row.id))];
+          active.queue.enqueue(ids);
+          active.queue.retryNow();
+        };
         const pickFiles = (files) => {
           const list = Array.from(files || []);
           if (!list.length) return;
@@ -1187,31 +1392,23 @@
           const off = runtimeStore.subscribeFrames((data) => {
             const nowIso = typeof Date !== "undefined" ? (/* @__PURE__ */ new Date()).toISOString() : "";
             if (data.type === "proactive") {
-              const parts = (data.messages || []).map((t) => ({
+              const deliveryId = typeof data.delivery_id === "string" ? data.delivery_id : "";
+              const parts = (data.messages || []).map((t, index) => ({
                 role: "assistant",
                 content: String(t),
                 inner_thought: data.inner_thought || "",
-                ts: nowIso
-              }));
+                ts: nowIso,
+                mid: deliveryId,
+                delivery_index: index
+              })).filter((part) => !deliveryId || !(overlayRef.current.some((row) => row.mid === deliveryId && row.delivery_index === part.delivery_index) || baseRef.current.some((row) => row.delivery_id === deliveryId && row.delivery_index === part.delivery_index)));
               if (parts.length > 0) {
                 overlayAdd(parts);
                 panelStore.bumpUnread();
               }
+              void refreshNew();
             } else if (data.type === "reply") {
               settleInflight(data.message_id);
-              if (data.duplicate) return;
-              if (noticesRef.current.delete(data.message_id)) setMsgs(renderMerged(baseRef.current));
-              const parts = (data.messages || []).map((t) => ({
-                role: "assistant",
-                content: String(t),
-                inner_thought: data.inner_thought || "",
-                ts: nowIso
-              }));
-              if (data.degraded && parts.length === 0 && !data.superseded && !data.waiting_for_decision) {
-                reportFailure(failureNotice(), { operation: "message", ts: nowIso, mid: data.message_id });
-              } else if (parts.length > 0) {
-                overlayAdd(parts);
-              }
+              showReply(data, nowIso, data.message_id);
             } else if (data.type === "dialogue_updated") {
               refreshNew();
             } else if (data.type === "error" && data.message_id && inflightRef.current.has(data.message_id)) {
@@ -1244,6 +1441,7 @@
             baseRef.current = page;
             reconcileOverlay();
             setMsgs(renderMerged(page));
+            acknowledgeRows(page, res);
             setHasMore(!!res.has_more);
             setOlderCursor(typeof res.next_before === "string" && res.next_before ? res.next_before : null);
             if (!res.has_more) setReachedStart(true);
@@ -1265,18 +1463,13 @@
               const known = new Set(baseRef.current.map((m) => m.id));
               const fresh = rows2.filter((m) => m.id && !known.has(m.id));
               if (fresh.length > 0) {
-                const merged = [...baseRef.current, ...fresh];
-                merged.sort((a, b) => {
-                  const ta = Date.parse(a.ts);
-                  const tb = Date.parse(b.ts);
-                  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0;
-                  return ta - tb;
-                });
+                const merged = [...baseRef.current, ...fresh].sort(compareChatRows);
                 baseRef.current = merged.slice(-200);
               }
               reconcileOverlay();
               setMsgs(renderMerged(baseRef.current));
             }
+            acknowledgeRows(rows2, delta);
             syncSeqRef.current += 1;
             return true;
           });
@@ -1386,11 +1579,12 @@
               const known = new Set(baseRef.current.map((m) => m.id));
               const fresh = rows2.filter((m) => m.id && !known.has(m.id));
               if (fresh.length > 0) {
-                const merged = [...fresh, ...baseRef.current];
+                const merged = [...fresh, ...baseRef.current].sort(compareChatRows);
                 baseRef.current = merged.slice(-200);
                 reconcileOverlay();
                 setMsgs(renderMerged(baseRef.current));
               }
+              acknowledgeRows(rows2, res);
               setHasMore(!!res.has_more);
               setOlderCursor(typeof res.next_before === "string" && res.next_before ? res.next_before : null);
               if (!res.has_more) setReachedStart(true);
@@ -1781,6 +1975,40 @@
             {
               style: { flex: "none", maxHeight: 240, overflowY: "auto", padding: "8px 12px", borderBottom: "1px solid var(--dsw-alias-border-l2)" }
             },
+            h(
+              "form",
+              { onSubmit: submitComputerTask, style: { marginBottom: 8 } },
+              h(
+                "label",
+                { style: { display: "block", fontSize: 12, marginBottom: 4 } },
+                "新电脑任务",
+                h("textarea", {
+                  value: taskGoal,
+                  required: true,
+                  rows: 2,
+                  maxLength: 8e3,
+                  disabled: taskSubmitting,
+                  onChange: (event) => setTaskGoal(event.target.value),
+                  style: {
+                    display: "block",
+                    boxSizing: "border-box",
+                    width: "100%",
+                    marginTop: 4,
+                    resize: "vertical",
+                    background: "var(--dsw-alias-bg-base)",
+                    color: "var(--dsw-alias-label-primary)",
+                    border: "1px solid var(--dsw-alias-border-l2)",
+                    borderRadius: 6,
+                    padding: "4px 6px"
+                  }
+                })
+              ),
+              h("button", {
+                type: "submit",
+                disabled: taskSubmitting || !taskGoal.trim() || !contextKey
+              }, taskSubmitting ? "提交中…" : "提交任务"),
+              taskSubmitNotice ? h("span", { role: "status", style: { marginLeft: 8, fontSize: 12 } }, taskSubmitNotice) : null
+            ),
             tasks.length ? tasks.map((task) => h(
               "div",
               { key: task.task_id, style: { padding: "4px 0", borderBottom: "1px solid var(--dsw-alias-border-l2)" } },

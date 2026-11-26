@@ -1,19 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { registerRoutes } from '../lib/routes.js'
 
-const root = new URL('../../', import.meta.url)
-const pythonLimits = readFileSync(new URL('src/infra/transport_limits.py', root), 'utf8')
-const pythonVision = readFileSync(new URL('src/domains/conversation/vision.py', root), 'utf8')
-const routesSource = readFileSync(new URL('dsh/lib/routes.js', root), 'utf8')
-const pythonChat = readFileSync(new URL('src/api/routers/chat.py', root), 'utf8')
-const apiSource = readFileSync(new URL('deploy/nginx.conf', root), 'utf8')
-const clientSource = readFileSync(new URL('dsh/client/src/entry.js', root), 'utf8')
-const pythonLimit = /CHAT_INGRESS_MAX_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(pythonLimits)
-assert.ok(pythonLimit, 'shared transport limits must declare the chat budget in MiB')
-const chatLimit = Number(pythonLimit[1]) * 1024 * 1024
+const monorepoRoot = new URL('../../', import.meta.url)
+function readMonorepoSource(path) {
+  const url = new URL(path, monorepoRoot)
+  return existsSync(url) ? readFileSync(url, 'utf8') : null
+}
+
+const pythonLimits = readMonorepoSource('src/infra/transport_limits.py')
+const pythonVision = readMonorepoSource('src/domains/conversation/vision.py')
+const pythonChat = readMonorepoSource('src/api/routers/chat.py')
+const apiSource = readMonorepoSource('deploy/nginx.conf')
+const routesSource = readFileSync(new URL('../lib/routes.js', import.meta.url), 'utf8')
+const clientSource = readFileSync(new URL('../client/src/entry.js', import.meta.url), 'utf8')
+const pythonLimit = pythonLimits
+  ? /CHAT_INGRESS_MAX_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(pythonLimits)
+  : null
+const dshLimit = /CHAT_REQUEST_BODY_MAX_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(routesSource)
+assert.ok(dshLimit, 'the DSH adapter must declare its chat body budget in MiB')
+const chatLimit = Number(dshLimit[1]) * 1024 * 1024
 
 class Request extends EventEmitter {
   constructor(path, headers = {}) {
@@ -48,10 +56,13 @@ function response() {
   }
 }
 
-test('DSH and Nginx transport adapters match the shared chat ingress budget', () => {
-  const dshLimit = /CHAT_REQUEST_BODY_MAX_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(routesSource)
-  assert.ok(dshLimit)
-  assert.equal(Number(dshLimit[1]) * 1024 * 1024, chatLimit)
+test('DSH and Nginx transport adapters match the shared chat ingress budget', (t) => {
+  if (!pythonLimit || !apiSource) {
+    t.skip('cross-repository ingress comparison runs in the MuChe monorepo')
+    return
+  }
+  assert.ok(pythonLimit, 'shared transport limits must declare the chat budget in MiB')
+  assert.equal(chatLimit, Number(pythonLimit[1]) * 1024 * 1024)
 
   const exact = /location\s*=\s*\/api\/chat\s*\{([^}]+)\}/s.exec(apiSource)
   assert.ok(exact)
@@ -60,7 +71,11 @@ test('DSH and Nginx transport adapters match the shared chat ingress budget', ()
   assert.equal(Number(nginxLimit[1]) * 1024 * 1024, chatLimit)
 })
 
-test('DSH image preflight mirrors Vision without becoming a second judge', () => {
+test('DSH image preflight mirrors Vision without becoming a second judge', (t) => {
+  if (!pythonVision) {
+    t.skip('cross-repository vision comparison runs in the MuChe monorepo')
+    return
+  }
   const imageCount = /VISION_MAX_IMAGES\s*=\s*(\d+)/.exec(pythonVision)
   const imageBytes = /VISION_MAX_BYTES\s*=\s*([\d* ]+)/.exec(pythonVision)
   const uiCount = /VISION_PREFLIGHT_MAX_IMAGES\s*=\s*(\d+)/.exec(clientSource)
@@ -106,7 +121,7 @@ test('chunked chat body counts received bytes and rejects after the cap', async 
   const res = response()
   const pending = handlers.get('/api/muche/chat')(req, res)
   const chunk = Buffer.alloc(1024 * 1024)
-  for (let index = 0; index <= Number(pythonLimit[1]); index += 1) req.emit('data', chunk)
+  for (let index = 0; index <= Number(dshLimit[1]); index += 1) req.emit('data', chunk)
   req.emit('end')
   await pending
   assert.equal(res.status, 413)
@@ -122,10 +137,13 @@ test('candidate health JSON has a separate bounded read', async () => {
 })
 
 test('voice audio rides the same chat route under the backend byte budget', async () => {
-  const pythonAudio = /CHAT_AUDIO_MAX_BASE64_CHARS\s*=\s*([\d_]+)/.exec(pythonChat)
   const dshAudio = /CHAT_AUDIO_MAX_BASE64_CHARS\s*=\s*([\d_]+)/.exec(routesSource)
-  assert.ok(pythonAudio && dshAudio, 'both layers declare the audio budget')
-  assert.equal(Number(dshAudio[1].replace(/_/g, '')), Number(pythonAudio[1].replace(/_/g, '')), 'the DSH cap mirrors the backend')
+  assert.ok(dshAudio, 'the DSH adapter declares the audio budget')
+  if (pythonChat) {
+    const pythonAudio = /CHAT_AUDIO_MAX_BASE64_CHARS\s*=\s*([\d_]+)/.exec(pythonChat)
+    assert.ok(pythonAudio, 'the backend declares the audio budget')
+    assert.equal(Number(dshAudio[1].replace(/_/g, '')), Number(pythonAudio[1].replace(/_/g, '')), 'the DSH cap mirrors the backend')
+  }
   assert.ok(routesSource.includes('if (audio) payload.audio = audio'), 'the route forwards audio unchanged')
   assert.ok(routesSource.includes('if (!text && !images?.length && !audio)'), 'a voice turn may carry no text')
 })

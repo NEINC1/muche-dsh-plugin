@@ -12,7 +12,7 @@ import http from 'node:http'
 import { CURSOR_INVALID, NOT_API } from '../lib/errors.js'
 import { registerRoutes } from '../lib/routes.js'
 
-const mode = { history422: false }
+const mode = { history422: false, receiptCalls: [], receiptOwner: 'u-int' }
 
 function stubBackend() {
   const server = http.createServer((req, res) => {
@@ -29,6 +29,17 @@ function stubBackend() {
       res.end(JSON.stringify({ messages: ['你好'], inner_thought: '', degraded: false }))
       return
     }
+    if (pathname === '/chat/receipts') {
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString())
+        mode.receiptCalls.push({ authorization: req.headers.authorization, body })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ receipt_owner: mode.receiptOwner, accepted_message_ids: body.message_ids, unavailable_message_ids: [] }))
+      })
+      return
+    }
     if (pathname === '/chat/history') {
       if (mode.history422) {
         res.writeHead(422, { 'Content-Type': 'application/json' })
@@ -36,7 +47,7 @@ function stubBackend() {
         return
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ messages: [], has_more: false, next_before: '' }))
+      res.end(JSON.stringify({ messages: [], has_more: false, next_before: '', receipt_owner: mode.receiptOwner }))
       return
     }
     res.writeHead(404, { 'Content-Type': 'application/json' })
@@ -162,6 +173,45 @@ test('history 非法游标 422→CURSOR_INVALID（面板回最新页，不红字
     assert.equal(body.code, CURSOR_INVALID)
   } finally {
     mode.history422 = false
+    server.close()
+  }
+})
+
+test('receipt route forwards message identities through the authenticated backend', async () => {
+  const { server, port } = await stubBackend()
+  mode.receiptCalls = []
+  try {
+    const handlers = harness({ backendUrl: `http://127.0.0.1:${port}/api`, apiKey: 'muche_k', workspacePath: '' })
+    const res = fakeRes()
+    const body = { message_ids: ['message-1'], expected_user_id: 'u-int' }
+    await handlers['/api/muche/receipts'](postReq(body), res)
+    assert.equal(res.status, 200)
+    assert.deepEqual(JSON.parse(res.body).accepted_message_ids, ['message-1'])
+    assert.deepEqual(mode.receiptCalls, [{ authorization: 'Bearer muche_k', body }])
+  } finally {
+    server.close()
+  }
+})
+
+test('history scopes retained receipts to backend and authenticated user without exposing credentials', async () => {
+  const { server, port } = await stubBackend()
+  try {
+    const read = async apiKey => {
+      const handlers = harness({ backendUrl: `http://127.0.0.1:${port}/api`, apiKey, workspacePath: '' })
+      const res = fakeRes()
+      await handlers['/api/muche/history']({ method: 'GET', url: '/api/muche/history' }, res)
+      assert.equal(res.status, 200)
+      return JSON.parse(res.body)
+    }
+    const original = await read('first-key')
+    const rotated = await read('second-key')
+    assert.match(original.receipt_scope, /^[0-9a-f]{64}$/)
+    assert.equal(rotated.receipt_scope, original.receipt_scope)
+    assert.ok(!JSON.stringify(original).includes('first-key'))
+    mode.receiptOwner = 'other-user'
+    assert.notEqual((await read('other-key')).receipt_scope, original.receipt_scope)
+  } finally {
+    mode.receiptOwner = 'u-int'
     server.close()
   }
 })

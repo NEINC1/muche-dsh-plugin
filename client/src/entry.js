@@ -5,12 +5,13 @@
 // 读写，存储唯一真源是宿主 profile patch（见 lib/config.js）。
 // 纯函数在 ./pure.js（直测），同源调用在 ./api.js；本文件只留工厂与 UI。
 import { apiGet, apiPost } from './api.js'
-import { clipboardImageFiles, fmtTime, gapMinutes, localHM } from './pure.js'
+import { chatReplyFailure, clipboardImageFiles, compareChatRows, fmtTime, gapMinutes, localHM } from './pure.js'
 import { downmix, encodeRecording } from './voice.js'
 import { openDshSettings } from './settings-entry.js'
 import { classifyFailure, STALE_RUNTIME } from '../../lib/errors.js'
 import { isSameProblem } from '../../lib/runtime-contract.js'
 import { createRuntimeClient } from './runtime-store.js'
+import { createMessageReceiptQueue } from '../message-receipts.js'
 
 // UI preflight only; dsh/test/request-body-bounds.test.js ties these to Vision's Owner values.
 const VISION_PREFLIGHT_MAX_IMAGES = 3
@@ -255,6 +256,11 @@ export const clientDefinition = {
       const runtime = useRuntime()
       const problem = runtime.problem
       const contextKey = runtime.context ? runtime.context.runtimeId + ':' + runtime.context.generation : ''
+      const receiptQueueRef = React.useRef(null)
+      React.useEffect(() => () => {
+        receiptQueueRef.current?.queue.dispose()
+        receiptQueueRef.current = null
+      }, [contextKey])
       const [msgs, setMsgs] = React.useState([])
       const [hasMore, setHasMore] = React.useState(false)
       const [olderCursor, setOlderCursor] = React.useState(null)
@@ -263,6 +269,11 @@ export const clientDefinition = {
       const [taskSnapshot, setTaskSnapshot] = React.useState({ contextKey: '', tasks: [] })
       const tasks = contextKey && taskSnapshot.contextKey === contextKey ? taskSnapshot.tasks : []
       const [tasksOpen, setTasksOpen] = React.useState(false)
+      const [taskGoal, setTaskGoal] = React.useState('')
+      const [taskSubmitting, setTaskSubmitting] = React.useState(false)
+      const [taskSubmitNotice, setTaskSubmitNotice] = React.useState('')
+      const taskDraft = React.useRef(null)
+      const taskSubmission = React.useRef(null)
       const [expandedTask, setExpandedTask] = React.useState('')
       const [stoppingTasks, setStoppingTasks] = React.useState({})
       const [taskNotices, setTaskNotices] = React.useState({})
@@ -274,12 +285,49 @@ export const clientDefinition = {
         const res = await runtimeRequest('/api/muche/tasks')
         if (res?.ok && sequence === taskRequestSeq.current) setTaskSnapshot({ contextKey, tasks: Array.isArray(res.tasks) ? res.tasks : [] })
       }, [contextKey])
+      async function submitComputerTask(event) {
+        event.preventDefault()
+        const context = runtime.context
+        const goal = taskGoal.trim()
+        if (!goal || taskSubmission.current || !context || !runtimeStore.accepts(context)) return
+        if (taskDraft.current?.goal !== goal) {
+          const bytes = crypto.getRandomValues(new Uint8Array(16))
+          const requestId = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+          taskDraft.current = { goal, request_id: requestId }
+        }
+        const draft = taskDraft.current
+        taskSubmission.current = draft
+        setTaskSubmitting(true)
+        setTaskSubmitNotice('')
+        try {
+          const response = await runtimeRequest('/api/muche/tasks', draft)
+          if (!runtimeStore.accepts(context)) return
+          if (response?.ok && response.outcome === 'accepted') {
+            taskDraft.current = null
+            setTaskGoal('')
+            setTaskSubmitNotice('电脑任务已受理')
+            await loadTasks()
+          } else {
+            setTaskSubmitNotice(response?.error || '暂未确认受理，重试可继续核对这次提交')
+          }
+        } finally {
+          if (taskSubmission.current === draft) {
+            taskSubmission.current = null
+            setTaskSubmitting(false)
+          }
+        }
+      }
       React.useEffect(() => {
         taskRequestSeq.current += 1
         setTaskSnapshot({ contextKey: '', tasks: [] })
         setTaskNotices({})
         setExpandedTask('')
         setStoppingTasks({})
+        setTaskGoal('')
+        setTaskSubmitNotice('')
+        setTaskSubmitting(false)
+        taskDraft.current = null
+        taskSubmission.current = null
         stoppingRef.current.clear()
       }, [contextKey])
       React.useEffect(() => {
@@ -326,7 +374,6 @@ export const clientDefinition = {
       const voiceClipsRef = React.useRef(new Map())
       const quotaUntilRef = React.useRef(0)
       const setQuota = (ms) => { quotaUntilRef.current = ms; setQuotaUntil(ms) }
-      const failureNotice = () => ({ kind: 'operation', text: '这条消息暂时没处理完，请稍后重试' })
       const withSticky = (rows) => {
         const remaining = new Map(noticesRef.current)
         const result = []
@@ -379,10 +426,12 @@ export const clientDefinition = {
       const syncSeqRef = React.useRef(0)
       const overlayCovered = (o, base) => {
         if (!o || typeof o !== 'object' || o.role === 'system') return false
-        // 精确认领：用户乐观行带客户端 message_id，服务端 ingress 对上即退役。
-        if (o.mid && base.some((b) => b.delivery_id && b.delivery_id === o.mid)) return true
+        // 一次主动投递可能包含多条消息，必须逐条认领。
+        const indexed = o.role === 'assistant' && o.mid && Number.isInteger(o.delivery_index)
+        if (o.mid && base.some((b) => b.delivery_id === o.mid
+          && (!indexed || (b.role === o.role && b.delivery_index === o.delivery_index)))) return true
         const content = typeof o.content === 'string' ? o.content : ''
-        if (content && base.some((b) => b.role === o.role && b.content === content)) return true
+        if (!indexed && content && base.some((b) => b.role === o.role && b.content === content)) return true
         if (!content) {
           const ot = Date.parse(o.ts)
           if (Number.isFinite(ot) && base.some((b) => {
@@ -403,12 +452,7 @@ export const clientDefinition = {
           if (overlayCovered(o, base)) continue
           rows.push(o)
         }
-        rows.sort((a, b) => {
-          const ta = Date.parse(a.ts)
-          const tb = Date.parse(b.ts)
-          if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0
-          return ta - tb
-        })
+        rows.sort(compareChatRows)
         return withSticky(rows)
       }
       const overlayAdd = (rows) => {
@@ -437,18 +481,26 @@ export const clientDefinition = {
         try { new Audio('data:audio/wav;base64,' + audio).play().catch(() => {}) } catch { /* 忽略播放失败 */ }
       }
 
+      const showReply = (reply, nowIso, mid, audio = '') => {
+        if (reply.superseded || reply.duplicate) return
+        if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current))
+        const failure = chatReplyFailure(reply)
+        if (failure) reportFailure({ kind: 'operation', text: failure }, { operation: 'message', ts: nowIso, mid })
+        const parts = (reply.messages || []).map((t) => ({
+          role: 'assistant', content: String(t), inner_thought: reply.inner_thought || '', ts: nowIso,
+          voice: Boolean(audio), voiceKey: audio ? mid : '',
+        }))
+        if (parts.length > 0) overlayAdd(parts)
+      }
+
       const handleHttpReply = (res, nowIso, mid) => {
         if (res?.stale) return
         settleInflight(mid)
         if (!res?.ok) { reportFailure(res, { operation: 'message', ts: nowIso, mid }); return }
-        if (noticesRef.current.delete(mid)) setMsgs(renderMerged(baseRef.current))
         // 语音轮：用户气泡的内容是服务端转写，替换发送时的占位；回复音频直放并可重播。
         if (res.transcript) updateOverlay(mid, { content: res.transcript })
         if (res.audio) { voiceClipsRef.current.set(mid, res.audio); playVoice(res.audio) }
-        const parts = (res.messages || []).map((t) => ({ role: 'assistant', content: String(t), inner_thought: res.inner_thought || '', ts: nowIso, voice: Boolean(res.audio), voiceKey: res.audio ? mid : '' }))
-        if (res.degraded && parts.length === 0 && !res.superseded && !res.waiting_for_decision) {
-          reportFailure(failureNotice(), { operation: 'message', ts: nowIso, mid })
-        } else if (parts.length > 0) overlayAdd(parts)
+        showReply(res, nowIso, mid, res.audio)
       }
 
       const normalize = (rows) => (rows || []).map((m) => ({
@@ -459,9 +511,36 @@ export const clientDefinition = {
         id: m.id || '',
         medium: m.medium || 'text',
         image_count: Number(m.image_count) || 0,
-        delivery_id: typeof m.delivery_id === 'string' ? m.delivery_id : (typeof m.ingress_id === 'string' ? m.ingress_id : ''),
+        delivery_id: typeof m.delivery_id === 'string' && m.delivery_id ? m.delivery_id : (typeof m.ingress_id === 'string' ? m.ingress_id : ''),
+        delivery_index: Number.isInteger(m.delivery_index) ? m.delivery_index : null,
+        seq: Number.isInteger(m.message_seq) ? m.message_seq : null,
         vision: typeof m.vision_descriptions === 'string' ? m.vision_descriptions : '',
       }))
+      const acknowledgeRows = (rows, response) => {
+        const owner = response?.receipt_owner, scope = response?.receipt_scope
+        const context = runtimeStore.context()
+        if (!owner || !scope || !context || !runtimeStore.accepts(context)) return
+        let active = receiptQueueRef.current
+        if (!active || active.owner !== owner || active.scope !== scope || !runtimeStore.accepts(active.context)) {
+          active?.queue.dispose()
+          const queue = createMessageReceiptQueue({
+            owner, scope, storage: () => window.localStorage,
+            isCurrent: () => runtimeStore.accepts(context),
+            send: async (ids, expectedUser) => {
+              const result = await runtimeRequest('/api/muche/receipts', { message_ids: ids, expected_user_id: expectedUser })
+              if (!result?.ok) throw new Error(result?.code || 'receipt request failed')
+              return result
+            },
+          })
+          active = { owner, scope, context, queue }
+          receiptQueueRef.current = active
+        }
+        // 回执边界是“本面板已纳入界面的持久人格消息”，不是某个 medium：
+        // 语音/图片气泡同样渲染，必须逐条确认；服务端按消息身份幂等记账。
+        const ids = [...new Set(rows.filter((row) => row.role === 'assistant' && row.id && row.delivery_id).map((row) => row.id))]
+        active.queue.enqueue(ids)
+        active.queue.retryNow()
+      }
 
       // 附图选择:格式、数量和字节强校验仍由后端 Vision Owner 判定；前端只做预检。
       const pickFiles = (files) => {
@@ -502,25 +581,21 @@ export const clientDefinition = {
         const off = runtimeStore.subscribeFrames((data) => {
           const nowIso = typeof Date !== 'undefined' ? new Date().toISOString() : ''
           if (data.type === 'proactive') {
-            const parts = (data.messages || []).map((t) => ({
-              role: 'assistant', content: String(t), inner_thought: data.inner_thought || '', ts: nowIso,
-            }))
+            const deliveryId = typeof data.delivery_id === 'string' ? data.delivery_id : ''
+            const parts = (data.messages || []).map((t, index) => ({
+              role: 'assistant', content: String(t), inner_thought: data.inner_thought || '', ts: nowIso, mid: deliveryId, delivery_index: index,
+            })).filter((part) => !deliveryId || !(
+              overlayRef.current.some((row) => row.mid === deliveryId && row.delivery_index === part.delivery_index)
+              || baseRef.current.some((row) => row.delivery_id === deliveryId && row.delivery_index === part.delivery_index)
+            ))
             if (parts.length > 0) {
               overlayAdd(parts)
               panelStore.bumpUnread()
             }
+            void refreshNew()
           } else if (data.type === 'reply') {
             settleInflight(data.message_id)
-            if (data.duplicate) return
-            if (noticesRef.current.delete(data.message_id)) setMsgs(renderMerged(baseRef.current))
-            const parts = (data.messages || []).map((t) => ({
-              role: 'assistant', content: String(t), inner_thought: data.inner_thought || '', ts: nowIso,
-            }))
-            if (data.degraded && parts.length === 0 && !data.superseded && !data.waiting_for_decision) {
-              reportFailure(failureNotice(), { operation: 'message', ts: nowIso, mid: data.message_id })
-            } else if (parts.length > 0) {
-              overlayAdd(parts)
-            }
+            showReply(data, nowIso, data.message_id)
           } else if (data.type === 'dialogue_updated') {
             // 对话更新广播——增量 20 条归一，显示最新消息与回复
             refreshNew()
@@ -561,6 +636,7 @@ export const clientDefinition = {
           baseRef.current = page
           reconcileOverlay()
           setMsgs(renderMerged(page))
+          acknowledgeRows(page, res)
           setHasMore(!!res.has_more)
           setOlderCursor(typeof res.next_before === 'string' && res.next_before ? res.next_before : null)
           if (!res.has_more) setReachedStart(true)
@@ -581,18 +657,13 @@ export const clientDefinition = {
             const known = new Set(baseRef.current.map((m) => m.id))
             const fresh = rows.filter((m) => m.id && !known.has(m.id))
             if (fresh.length > 0) {
-              const merged = [...baseRef.current, ...fresh]
-              merged.sort((a, b) => {
-                const ta = Date.parse(a.ts)
-                const tb = Date.parse(b.ts)
-                if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0
-                return ta - tb
-              })
+              const merged = [...baseRef.current, ...fresh].sort(compareChatRows)
               baseRef.current = merged.slice(-200)
             }
             reconcileOverlay()
             setMsgs(renderMerged(baseRef.current))
           }
+          acknowledgeRows(rows, delta)
           syncSeqRef.current += 1
           return true
         })
@@ -691,11 +762,12 @@ export const clientDefinition = {
             const known = new Set(baseRef.current.map((m) => m.id))
             const fresh = rows.filter((m) => m.id && !known.has(m.id))
             if (fresh.length > 0) {
-              const merged = [...fresh, ...baseRef.current]
+              const merged = [...fresh, ...baseRef.current].sort(compareChatRows)
               baseRef.current = merged.slice(-200)
               reconcileOverlay()
               setMsgs(renderMerged(baseRef.current))
             }
+            acknowledgeRows(rows, res)
             setHasMore(!!res.has_more)
             setOlderCursor(typeof res.next_before === 'string' && res.next_before ? res.next_before : null)
             if (!res.has_more) setReachedStart(true)
@@ -1013,6 +1085,23 @@ export const clientDefinition = {
         tasksOpen ? h('div', {
           style: { flex: 'none', maxHeight: 240, overflowY: 'auto', padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
         },
+          h('form', { onSubmit: submitComputerTask, style: { marginBottom: 8 } },
+            h('label', { style: { display: 'block', fontSize: 12, marginBottom: 4 } }, '新电脑任务',
+              h('textarea', {
+                value: taskGoal, required: true, rows: 2, maxLength: 8000, disabled: taskSubmitting,
+                onChange: (event) => setTaskGoal(event.target.value),
+                style: {
+                  display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 4, resize: 'vertical',
+                  background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+                  border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, padding: '4px 6px',
+                },
+              }),
+            ),
+            h('button', {
+              type: 'submit', disabled: taskSubmitting || !taskGoal.trim() || !contextKey,
+            }, taskSubmitting ? '提交中…' : '提交任务'),
+            taskSubmitNotice ? h('span', { role: 'status', style: { marginLeft: 8, fontSize: 12 } }, taskSubmitNotice) : null,
+          ),
           tasks.length ? tasks.map((task) => h('div', { key: task.task_id, style: { padding: '4px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
             h('div', {
               onClick: () => setExpandedTask((current) => current === task.task_id ? '' : task.task_id),

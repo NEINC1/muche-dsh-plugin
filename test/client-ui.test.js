@@ -19,7 +19,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve))
  * runtime snapshot the SSE route would publish, and pushes real runtime frames into the
  * EventSource the bundle opened. No source rewriting and no private state poking.
  */
-async function mountPanel({ desktopMode = false, tasks = [], stopResult = null, taskResponse = null } = {}) {
+async function mountPanel({ desktopMode = false, tasks = [], stopResult = null, taskResponse = null, historyMessages = [] } = {}) {
   const win = new Window({ url: 'http://127.0.0.1:19387/' })
   let desktopCloses = 0
   if (desktopMode) win.mucheDesktopChat = { active: true, close() { desktopCloses++ } }
@@ -36,7 +36,8 @@ async function mountPanel({ desktopMode = false, tasks = [], stopResult = null, 
   const fetchStub = async (url, init = {}) => {
     httpCalls.push({ url: String(url), method: init.method || 'GET', body: init.body })
     if (String(url).includes('/runtime')) return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: runtime.getSnapshot() }) }
-    if (String(url).includes('/chat/history')) return { ok: true, status: 200, json: async () => ({ ok: true, messages: [], has_more: false, context: runtime.context() }) }
+    if (String(url).includes('/api/muche/history')) return { ok: true, status: 200, json: async () => ({ ok: true, messages: [...historyMessages], has_more: false, receipt_owner: 'panel-user', receipt_scope: 'panel-test-scope', context: runtime.context() }) }
+    if (String(url).includes('/api/muche/receipts')) return { ok: true, status: 200, json: async () => ({ ok: true, receipt_owner: 'panel-user', accepted_message_ids: JSON.parse(init.body).message_ids, unavailable_message_ids: [], context: runtime.context() }) }
     if (String(url).includes('/tasks/stop')) {
       const context = runtime.context()
       const result = typeof stopResult === 'function' ? await stopResult() : stopResult
@@ -165,6 +166,44 @@ test('task panel shows recorded results and reports an unconfirmed stop', async 
     assert.equal(calls.length, 1)
     assert.equal(JSON.parse(calls[0].body).task_id, 'running')
     assert.equal(panel.httpCalls.filter(call => call.url.includes('/api/muche/chat')).length, 0)
+  } finally { panel.restore() }
+})
+
+test('history receipts and repeated proactive messages preserve each delivery part', async () => {
+  const now = new Date().toISOString()
+  const historyMessages = [
+    { id: 'user-1', role: 'user', content: '用户消息', medium: 'text', created_at: now, delivery_id: '', ingress_id: 'ingress-1' },
+    { id: 'persona-1', role: 'persona', content: '第一条任务结果', medium: 'text', created_at: now, delivery_id: 'delivery-1', delivery_index: 0 },
+    { id: 'persona-image', role: 'persona', content: '', medium: 'image', created_at: now, delivery_id: 'delivery-2', delivery_index: 0, image_count: 1 },
+  ]
+  const panel = await mountPanel({ historyMessages })
+  try {
+    await panel.open()
+    await panel.act(async () => { for (const source of panel.sources) source.open(); await tick() })
+    panel.pushRuntime()
+    await panel.act(async () => { await tick(); await tick() })
+    const receipts = () => panel.httpCalls.filter(call => call.url.includes('/api/muche/receipts')).flatMap(call => JSON.parse(call.body).message_ids)
+    assert.ok(receipts().includes('persona-1'))
+    // 回执边界是“已渲染的持久人格消息”，图片气泡同样逐条确认。
+    assert.ok(receipts().includes('persona-image'))
+    assert.ok(!receipts().includes('user-1'))
+
+    const frame = { type: 'proactive', context: panel.runtime.context(), delivery_id: 'delivery-1', messages: ['第一条任务结果', '第二条任务结果'] }
+    await panel.act(async () => {
+      for (const source of panel.sources) if (!source.closed) source.send(frame)
+      await tick(); await tick()
+    })
+    assert.equal((panel.text().match(/第一条任务结果/g) || []).length, 1)
+    assert.equal((panel.text().match(/第二条任务结果/g) || []).length, 1)
+
+    historyMessages.push({ id: 'persona-2', role: 'persona', content: '第二条任务结果', medium: 'text', created_at: now, delivery_id: 'delivery-1', delivery_index: 1 })
+    await panel.act(async () => {
+      for (const source of panel.sources) if (!source.closed) source.send(frame)
+      await tick(); await tick()
+    })
+    assert.equal((panel.text().match(/第一条任务结果/g) || []).length, 1)
+    assert.equal((panel.text().match(/第二条任务结果/g) || []).length, 1)
+    assert.ok(receipts().includes('persona-2'))
   } finally { panel.restore() }
 })
 

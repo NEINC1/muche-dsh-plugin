@@ -9,10 +9,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { clipboardImageFiles, fmtTime, gapMinutes, localHM } from '../client/src/pure.js'
+import { chatReplyFailure, clipboardImageFiles, compareChatRows, fmtTime, gapMinutes, localHM } from '../client/src/pure.js'
 import { classifyFailure } from '../lib/errors.js'
 import { isSameProblem, projectClientRuntime } from '../lib/runtime-contract.js'
 import { createRuntimeState } from '../lib/runtime-state.js'
+
+test('reply failures distinguish terminal, persisted notice, waiting and legacy replies', () => {
+  assert.equal(chatReplyFailure({ outcome_status: 'failed' }), '这轮回复没有完成')
+  assert.equal(chatReplyFailure({ outcome_status: 'failed', failure_notice_recorded: true }), null)
+  assert.equal(chatReplyFailure({ outcome_status: 'failed', duplicate: true }), null)
+  assert.equal(chatReplyFailure({ superseded: true, degraded: true }), null)
+  assert.equal(chatReplyFailure({ waiting_for_decision: true, degraded: true }), null)
+  for (const outcome_status of ['retry_wait', 'natural_silence', 'action_only']) {
+    assert.equal(chatReplyFailure({ outcome_status, degraded: true }), null)
+  }
+  assert.equal(chatReplyFailure({ messages: ['在呢'], degraded: true }), null)
+  assert.equal(chatReplyFailure({ degraded: true }), '这轮回复暂时不可用')
+})
 
 test('localHM 非法输入回空串', () => {
   assert.equal(localHM(''), '')
@@ -30,6 +43,23 @@ test('gapMinutes 非法回 null', () => {
   assert.equal(gapMinutes('', ''), null)
   assert.equal(gapMinutes('x', 'y'), null)
   assert.equal(gapMinutes('2020-01-01T00:00:00.000Z', '2020-01-01T01:00:00.000Z'), 60)
+})
+
+test('compareChatRows 同时间戳按 message_seq 排序，不按随机 id', () => {
+  const at = '2026-11-08T14:13:56.606+08:00'
+  const rows = [
+    { id: 'c', ts: at, seq: 14249 },
+    { id: 'a', ts: at, seq: 14247 },
+    { id: 'b', ts: at, seq: 14248 },
+  ]
+  assert.deepEqual(rows.slice().sort(compareChatRows).map((row) => row.id), ['a', 'b', 'c'])
+})
+
+test('compareChatRows 无 seq 时回退时间戳并保持稳定', () => {
+  const at = '2026-11-08T14:13:56.606+08:00'
+  const rows = [{ id: 'z', ts: at }, { id: 'a', ts: at }, { id: 'm', ts: at }]
+  assert.deepEqual(rows.slice().sort(compareChatRows).map((row) => row.id), ['z', 'a', 'm'])
+  assert.ok(compareChatRows({ ts: '2026-11-08T10:00:00.000Z' }, { ts: '2026-11-08T10:00:01.000Z' }) < 0)
 })
 
 test('剪贴板图片优先取 items，缺少文件时回退 files', () => {

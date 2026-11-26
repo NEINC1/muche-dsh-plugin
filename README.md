@@ -20,7 +20,7 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级使用同一条命令。当前市场版本为 0.8.14。
+升级使用同一条命令。本次版本为 0.8.15。
 支持 DSH `0.2.1-rc.5`（latest）和 `0.2.2-alpha.3`（alpha）；`engines.dsh` 只接受这两个版本。
 桥接协议 v2 协商取消、输入送达及已读等能力，旧宿主按实际能力降级。
 
@@ -35,6 +35,7 @@ dsh plugin add muche-dsh-plugin
 3. 第一次显示时会下载 Electron 桌面组件。显示偏好与窗口位置保存在 `DSH_HOME/muche-desktop/state.json`（默认 `~/.dsh/muche-desktop/`），手动删除该目录可清除桌面组件缓存和位置偏好。聊天记录仍保存在后端。
 4. 输入框支持 `Ctrl+V` 粘贴剪贴板图片；反向桥接配好 key 后按连接状态启动。
 5. 本工作区的聊天面板顶部「任务」图标打开任务抽屉：显示任务状态与 stage（等你回答/被阻塞会高亮）、追加输入、最近执行和完整已存结果；进行中任务可停止，后续需求在聊天中提出并由任务路由决定是否续接。
+   需要另办一件电脑任务时，在抽屉的「新电脑任务」输入目标并提交。已受理表示后台收到委托，宿主接单和结果看任务回执。
 
 桌面立绘取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，素材限非商业使用；形象按 CC BY-NC-SA 4.0 授权，出处与署名见 [素材说明](desktop-helper/assets/README.md)。
 
@@ -62,7 +63,7 @@ dsh plugin remove 'muche-dsh-plugin'
 
 `remove` 只摘层与代码；本机配置（profile patch 里 `muche` 条目的配置）保留，重装免配。0.5.0 起插件不在本机存任何聊天文件；旧版遗留的本地存档（`~/muche-dsh-workspace/messages/`）原样保留，可手动删除。装完在托盘重启 DSH Desktop 生效。彻底清掉：删掉 profile patch 里 `muche` 条目的 `config` 段。
 
-反向桥接只调用户本机：后端把任务帧从该用户的桥接连递下来，插件在本地 dsh 进程内执行、结果原路回传。桥不在时后端明确失败，不回退服务器。
+反向桥接只调用户本机：后端把任务帧从该用户的桥接连递下来，插件在本地 dsh 进程内执行、结果原路回传。网页和 DSH 面板的普通对话会看到当前账户的桥接状态。没有可用桥接或宿主明确未受理时，任务保留受阻原因，可在再次授权后继续。
 
 ## 技术细节
 
@@ -92,7 +93,7 @@ dsh plugin remove 'muche-dsh-plugin'
 | `lib/protocol.json` | 桥接 v2 版本、能力和执行失败枚举的唯一真源；后端读取同一文件 |
 | `client/src/` | 面板源码（`pure.js` 纯格式函数＋`api.js` 同源封装＋`runtime-store.js` 浏览器镜像＋`entry.js` 工厂与 UI），esbuild 打包到 `client/client.js`（构建产物随包发布，不手改） |
 
-反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力，后端以 `dsh_hello_ack` 确认登记成功与否（成功带 `host_id` 回显，失败带已有枚举 `code` 且不登记）；插件只认该 ACK 为登记事实，不以 socket hello 或本地 ready 代替，未收到 ACK 前保持 starting。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。会话不存在保留具体上游事实，由小沐说明并按剩余任务续接新会话；失效的 `sN` 不再复用。断连与未知结果保留受理确定性，不据此重做副作用任务；重启恢复先只读查询原 task。
+反向桥接先用 `dsh_hello` 登记持久的宿主身份与 v2 能力，后端以 `dsh_hello_ack` 确认登记成功与否（成功带 `host_id` 回显，失败带已有枚举 `code` 且不登记）；插件只认该 ACK 为登记事实，不以 socket hello 或本地 ready 代替，未收到 ACK 前保持 starting。任务只发送给所属宿主，旧插件需升级；同 `session_id` 串行、稳定 `task_id` 去重，执行阶段和结果分别上报。已绑定会话的续办只匹配原宿主，失效别名保留原原因。断连或超时保留当时的受理证据；恢复时只读查询原宿主上的原任务，有确认结果后才更新状态。
 
 在途追加只在相同 live run 的自有 turn 使用公开 `Agent.steer`，用同 cohort 的 `createUserMessage` 构造消息并同步受理；原任务尚未进入自有 turn 时返回 `turn_pending`，后端保留同一 `append_id` 重试。终态后拒收，不转成无人收结果的新轮。明确拒收的追加保留完整任务，等原任务结果落账后由小沐续办；曾丢失回执的追加仍保留结果未知事实。授权/提问先登记 resolver 再经 `dsh_interactive` 上行，每次交互有独立 opaque id，原始问题与选项完整保留。其他 turn 透传。小沐能拿捏就提交决定，需要用户时提交真实问题并保留等待；`dsh_decide_result` 只确认本地校验提交；后续原生 `tool/result` 或迟到答案接收事件以 `dsh_interactive_result` 确认原生接收，执行最终结果另报。宿主进程缓存相同 `command_id` 的回执：活跃 run 的收据保留，终态收据按最近 200 项收敛；相同身份不同内容拒收。
 
