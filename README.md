@@ -20,9 +20,9 @@
 dsh plugin add muche-dsh-plugin
 ```
 
-升级使用同一条命令。本次版本为 0.8.15。
-支持 DSH `0.2.1-rc.5`（latest）和 `0.2.2-alpha.3`（alpha）；`engines.dsh` 只接受这两个版本。
-桥接协议 v2 协商取消、输入送达及已读等能力，旧宿主按实际能力降级。
+升级使用同一条命令。本包版本为 `0.8.16`，只支持 DSH `0.2.3-alpha.2`；
+路由鉴权由 WebServer 统一执行，桌宠登录使用官方签名入口事件，不兼容旧 stable 或旧 alpha。
+桥接协议 v2 协商取消、输入送达及已读等能力；宿主版本由 `engines.dsh` 精确限制。
 
 注意 `dsh --profile desktop plugin add` 的父 flag 写法上游不接受（`plugin`
 子命令自带 `--profile`，见上游 `rejectParentOptions`），必报
@@ -84,11 +84,12 @@ dsh plugin remove 'muche-dsh-plugin'
 | `lib/http.js` | 后端 JSON/二进制请求唯一出口（归一前置＋UPSTREAM_HTML 分流） |
 | `lib/runtime-state.js` | 宿主运行状态 Owner：配置代际、聊天收发就绪、桥接生命周期的唯一投影（快照无凭据，订阅即回放当前全量） |
 | `lib/runtime-contract.js` | 宿主/浏览器共用的快照契约与故障去重（同因只去重一次，无关错误不吞） |
-| `lib/routes.js` | `/api/muche/{runtime,chat,history,image,health,events}` 同源路由（配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID；聊天/候选健康 JSON 在缓冲前分别限 40 MiB/64 KiB，跨层预算见 `ARCHITECTURE.md` §7） |
+| `lib/routes.js` | `/api/muche/{runtime,chat,history,image,health,events}` 同源路由（每条路由注册 `auth: required`，由 DSH WebServer 统一准入；配置读写走官方服务，不在此；历史直读服务端唯一真源，本机零落盘；游标 422 转 CURSOR_INVALID；聊天/候选健康 JSON 在缓冲前分别限 40 MiB/64 KiB，跨层预算见 `ARCHITECTURE.md` §7） |
 | `lib/connections.js` | 连接生命周期唯一 Owner（面板上游＋桥接各持一个 ChannelConnection，指纹换连） |
 | `lib/backend_ws.js` | 后端 WS 传输类（桥接通道＋面板 SSE 上游，ping/重连/缓冲；`ready` 只由后端真实 hello 置真） |
 | `lib/panel-events.js` | 面板 SSE 扇出 Owner：首位订阅先发完整快照，业务帧按配置 context 盖章 |
 | `lib/register-guard.js` | 注册事务守卫：双挂载降级时原子撤销本轮注册，不留混合 Owner 的孤儿路由 |
+| `lib/desktop/auth-url.js` | 桌宠窗口登录入口：从当前 WebServer 的 `webserver/entry-url` 事件消费 token provider 签名 URL，不自行签名或重复认证 |
 | `lib/dsh-bridge.js` + `lib/dsh-call.js` | 反向桥接：宿主归属、稳定指令、应用回执、只读查询；执行订阅先于 prompt，按所属 turn 收口 |
 | `lib/protocol.json` | 桥接 v2 版本、能力和执行失败枚举的唯一真源；后端读取同一文件 |
 | `client/src/` | 面板源码（`pure.js` 纯格式函数＋`api.js` 同源封装＋`runtime-store.js` 浏览器镜像＋`entry.js` 工厂与 UI），esbuild 打包到 `client/client.js`（构建产物随包发布，不手改） |
@@ -107,7 +108,7 @@ dsh plugin remove 'muche-dsh-plugin'
 
 执行前同时订阅 `agent/inbox/claimed`，按消息 rpcId 与所属 turn 绑定来源；上游 pre-step 在写入正文前拒绝或结束时仍保留实际终态，其他 turn 不结算当前任务，所有退出清理两类订阅。
 
-依赖：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 、`@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-tools` 为 peer（用宿主同 cohort 的服务和消息类型）；`ws`、`undici` 自带。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
+依赖：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 、`@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-tools` 为 peer（用宿主同 cohort 的服务和消息类型）；`ws`、`undici` 自带。新版 DSH 由 WebServer route policy 持有认证，插件不注入 `connection`，也不保留 `requestRejection` / `authenticatedUrl` 兼容调用。改动依赖前后必跑 `pnpm test`（`deps.test.js` 守卫）；重启 Desktop 前必跑全量测试，全绿才动。
 
 </details>
 

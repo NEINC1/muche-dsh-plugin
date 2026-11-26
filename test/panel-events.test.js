@@ -61,11 +61,10 @@ function harness(t, { startStates = [{ status: 'connecting', ready: false }], st
   return { hub, runtime, created, configure, get watchers() { return watchers } }
 }
 
-function routeHarness({ rejection } = {}) {
+function routeHarness() {
   const handlers = {}, hooks = new Map(), cleanups = []
   const ctx = {
-    connection: { requestRejection: () => rejection },
-    webServer: { register: ({ path, handler }) => { handlers[path] = handler; return () => { delete handlers[path] } } },
+    webServer: { register: (route) => { handlers[route.path] = route; return () => { delete handlers[route.path] } } },
     effect: (setup) => { const dispose = setup(); if (typeof dispose === 'function') cleanups.push(dispose) },
     on: (name, fn) => { hooks.set(name, fn); return () => hooks.delete(name) },
     get: () => undefined,
@@ -324,32 +323,24 @@ test('fallback hub 复用同一 runtime 实现且支持显式 configure', (t) =>
   assert.equal(snapshots(res).at(-1).chat.receive.status, 'connecting')
 })
 
-test('路由缺配置仍返回200 SSE可诊断；DSH鉴权门和方法门保持原样', (t) => {
+test('路由缺配置仍返回200 SSE可诊断；新版 WebServer 独占鉴权门', (t) => {
   const f = harness(t, { initial: { backendUrl: '', apiKey: '' } })
   const route = routeHarness()
   t.after(route.dispose)
   assert.equal(registerPanelEvents(route.ctx, {}, undefined, { runtime: f.runtime, hub: f.hub }), false)
   assert.equal(route.hooks.has('loader/volatile-update'), false, 'supplied hub/runtime 禁止第二配置监听')
   const res = fakeRes()
-  route.handlers['/api/muche/events']({ method: 'GET' }, res)
+  const eventRoute = route.handlers['/api/muche/events']
+  assert.equal(eventRoute.auth, 'required')
+  eventRoute.handler({ method: 'GET' }, res)
   assert.equal(res.code, 200)
   assert.equal(res.headers['Content-Type'], 'text/event-stream')
   assert.equal(snapshots(res)[0].problem.kind, 'config')
   assert.equal(f.created.length, 0)
   const wrongMethod = fakeRes()
-  route.handlers['/api/muche/events']({ method: 'POST' }, wrongMethod)
+  eventRoute.handler({ method: 'POST' }, wrongMethod)
   assert.equal(wrongMethod.code, 405)
   assert.equal(f.hub.subscriberCount, 1)
-  for (const rejection of [401, 403]) {
-    const denied = routeHarness({ rejection })
-    t.after(denied.dispose)
-    registerPanelEvents(denied.ctx, {}, undefined, { runtime: f.runtime, hub: f.hub })
-    const response = fakeRes()
-    denied.handlers['/api/muche/events']({ method: 'GET' }, response)
-    assert.equal(response.code, rejection)
-    assert.equal(response.ended, true)
-    assert.equal(f.hub.subscriberCount, 1)
-  }
 })
 
 test('standalone 路由由官方 volatile 事件更新现有 SSE，dispose 清该监听', (t) => {
@@ -358,7 +349,7 @@ test('standalone 路由由官方 volatile 事件更新现有 SSE，dispose 清�
   const config = { backendUrl: '', apiKey: '' }
   registerPanelEvents(route.ctx, config)
   const res = fakeRes()
-  route.handlers['/api/muche/events']({ method: 'GET' }, res)
+  route.handlers['/api/muche/events'].handler({ method: 'GET' }, res)
   const first = snapshots(res).at(-1)
   config.backendUrl = CFG.backendUrl
   route.hooks.get('loader/volatile-update')()

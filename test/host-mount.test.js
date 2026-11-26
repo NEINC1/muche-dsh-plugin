@@ -16,14 +16,13 @@ function hostCtx({ configNs = 'muche', server } = {}) {
   const events = []
   const ctx = {
     fiber: 'fiber-' + Math.random().toString(16).slice(2, 8),
-    connection: { requestRejection: () => undefined },
     webServer: {
       register(entry) {
         const key = `${entry.kind} ${entry.path}`
         // One server rejects a second registration of the same exact path, and a disposer
         // never unregisters a path it does not own.
         if (routes.has(key)) throw new Error(`duplicate exact route: ${key}`)
-        routes.set(key, { handler: entry.handler, owner: ctx })
+        routes.set(key, { ...entry, owner: ctx })
         return () => { const current = routes.get(key); if (current?.owner === ctx) routes.delete(key) }
       },
     },
@@ -42,7 +41,7 @@ function hostCtx({ configNs = 'muche', server } = {}) {
       if (name === 'workspaceRegistry') return { list: async () => [] }
       if (name === 'sessionQuery') return { readTitle: () => '' }
       if (name === 'sessionController') return { create: async () => ({ id: 'session-1' }), prompt: async () => ({}) }
-      if (name === 'settings' || name === 'connection' || name === 'webServer') return { update: async () => {} }
+      if (name === 'settings' || name === 'webServer') return { update: async () => {} }
       return undefined
     },
   }

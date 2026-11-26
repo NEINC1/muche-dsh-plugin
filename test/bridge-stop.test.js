@@ -170,7 +170,7 @@ test('stop of an unknown assignment replies unknown', async (t) => {
   assert.equal(reply.status, 'unknown')
 })
 
-test('session owner query uses the 0.2.2 passive state interface when inspect is absent', async (t) => {
+test('session owner query uses the current passive state interface when inspect is absent', async (t) => {
   const f = fixture(t)
   const transport = await ready(f)
   f.services.sessionController.state = async ({ sessionId }) => {

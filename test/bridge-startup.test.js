@@ -39,7 +39,6 @@ function routeCtx(overrides = {}) {
   const config = { backendUrl: 'http://127.0.0.1:8000', apiKey: 'k-route', workspacePath: '' }
   return {
     ctx: {
-      connection: { requestRejection: () => undefined },
       webServer: {
         register: ({ path, handler }) => {
           if (handlers[path]) throw new Error(`webserver: duplicate exact route "${path}"`)
@@ -157,7 +156,6 @@ test('双 apply：第二份不抛、degraded=true、首份路由保留', () => {
   const table = sharedWebServer()
   const config = { backendUrl: '', apiKey: '', workspacePath: '' }
   const mk = () => ({
-    connection: { requestRejection: () => undefined },
     webServer: table,
     get: () => undefined,
     on: () => () => {},
@@ -257,7 +255,6 @@ test('卸载清理：live-remove 后路由释放，重装不再撞车', () => {
   const cleanups = []
   const config = { backendUrl: '', apiKey: '', workspacePath: '' }
   const mk = () => ({
-    connection: { requestRejection: () => undefined },
     webServer: table,
     get: () => undefined,
     effect: (setup) => {

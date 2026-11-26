@@ -23,13 +23,15 @@ const BRIDGE_SRC = readFileSync(new URL('../lib/dsh-bridge.js', import.meta.url)
 const CLIENT_SRC = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8').replace(/"/g, "'")
 // WP4 过渡：产物改走 esbuild 打包，引号归一化。
 
-test('顶层 inject 只留生死线（桥接依赖不在其中）', () => {
+test('顶层 inject 只留 settings 与 WebServer（桥接依赖与旧鉴权 API 不在其中）', () => {
   const m = INDEX_SRC.match(/export const inject = \[([^\]]*)\]/)
   assert.ok(m, '未找到顶层 inject 声明')
   const list = m[1]
-  for (const core of ['settings', 'webServer', 'connection']) {
+  for (const core of ['settings', 'webServer']) {
     assert.ok(list.includes(`'${core}'`), `顶层 inject 缺少生死线依赖 ${core}`)
   }
+  assert.ok(!list.includes("'connection'"), '新版 WebServer 已拥有用户态路由鉴权')
+  assert.ok(!INDEX_SRC.includes('requestRejection') && !INDEX_SRC.includes('authenticatedUrl'), '不得依赖旧 connection 鉴权 API')
   for (const soft of ['workspaceRegistry', 'sessionQuery', 'sessionController', 'credentials']) {
     assert.ok(!list.includes(soft), `可选依赖 ${soft} 仍在顶层 inject——缺它的 profile 上整插件进 waiting`)
   }
@@ -82,7 +84,6 @@ test('配置走官方服务：自建 config 路由已删，health 暴露 configN
     get: (name) => (name === 'loader'
       ? { locate: () => 'muche', resolve: () => ({ options: { id: 'muche' } }) }
       : undefined),
-    connection: { requestRejection: () => undefined },
     webServer: { register: ({ path, handler }) => { handlers[path] = handler } },
   }
   registerRoutes(ctx, config)

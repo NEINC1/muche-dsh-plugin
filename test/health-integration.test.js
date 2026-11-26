@@ -61,7 +61,6 @@ function stubBackend() {
 function harness(config) {
   const handlers = {}
   const ctx = {
-    connection: { requestRejection: () => undefined },
     webServer: {
       register: ({ path, handler }) => {
         if (handlers[path]) throw new Error(`duplicate ${path}`)

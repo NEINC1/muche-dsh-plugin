@@ -37,7 +37,6 @@ class Request extends EventEmitter {
 function setup() {
   const handlers = new Map()
   const ctx = {
-    connection: { requestRejection: () => undefined },
     webServer: { register: ({ path, handler }) => { handlers.set(path, handler) } },
     effect: () => {},
     on: () => {},

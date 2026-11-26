@@ -15,7 +15,6 @@ function routeCtx(config) {
   const handlers = {}
   return {
     ctx: {
-      connection: { requestRejection: () => undefined },
       webServer: {
         register: ({ path, handler }) => {
           if (handlers[path]) throw new Error(`webserver: duplicate exact route "${path}"`)
